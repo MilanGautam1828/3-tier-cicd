@@ -1,7 +1,7 @@
 name: Terraform Deploy
 
 on:
-  workflow_dispatch:     # 👈 Enables manual triggering from GitHub UI
+  workflow_dispatch:     # Enables manual triggering from GitHub UI
   push:
     branches:
       - main
