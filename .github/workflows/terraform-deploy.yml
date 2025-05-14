@@ -1,6 +1,7 @@
 name: Terraform Deploy
 
 on:
+  workflow_dispatch:     # 👈 Enables manual triggering from GitHub UI
   push:
     branches:
       - main
@@ -17,7 +18,7 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v2
 
-      # Step 2: Set up Terraform ''
+      # Step 2: Set up Terraform
       - name: Set up Terraform
         uses: hashicorp/setup-terraform@v2
         with:
