@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html>
+<head><title>Contact Form</title></head>
+<body>
+  <h2>Enter your contact info</h2>
+  <form id="contact-form">
+    <input type="text" id="name" placeholder="Name" required><br>
+    <input type="text" id="phone" placeholder="Phone" required><br>
+    <button type="submit">Submit</button>
+  </form>
+  <p id="msg"></p>
+  <script>
+    const form = document.getElementById('contact-form');
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const name = document.getElementById('name').value;
+      const phone = document.getElementById('phone').value;
+      const res = await fetch('/api/contact', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ name, phone })
+      });
+      const data = await res.json();
+      document.getElementById('msg').textContent = data.message;
+    });
+  </script>
+</body>
+</html>
