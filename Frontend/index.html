@@ -1,28 +1,115 @@
 <!DOCTYPE html>
-<html>
-<head><title>Contact Form</title></head>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Contact Form</title>
+  <style>
+    body {
+      font-family: 'Segoe UI', sans-serif;
+      background: linear-gradient(135deg, #74ebd5, #9face6);
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      height: 100vh;
+      margin: 0;
+    }
+
+    .container {
+      background-color: white;
+      padding: 2rem 3rem;
+      border-radius: 12px;
+      box-shadow: 0 8px 20px rgba(0,0,0,0.2);
+      width: 300px;
+      text-align: center;
+      animation: fadeIn 1s ease-in-out;
+    }
+
+    h2 {
+      margin-bottom: 1.5rem;
+      color: #333;
+    }
+
+    input {
+      width: 100%;
+      padding: 0.6rem;
+      margin: 0.5rem 0;
+      border: 1px solid #ccc;
+      border-radius: 6px;
+      font-size: 1rem;
+    }
+
+    button {
+      margin-top: 1rem;
+      width: 100%;
+      padding: 0.7rem;
+      background-color: #5c6bc0;
+      color: white;
+      border: none;
+      border-radius: 6px;
+      font-size: 1rem;
+      cursor: pointer;
+      transition: background-color 0.3s ease;
+    }
+
+    button:hover {
+      background-color: #3f51b5;
+    }
+
+    #msg {
+      margin-top: 1rem;
+      font-weight: bold;
+      color: green;
+    }
+
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateY(-20px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+  </style>
+</head>
 <body>
-  <h2>Enter your contact info</h2>
-  <form id="contact-form">
-    <input type="text" id="name" placeholder="Name" required><br>
-    <input type="text" id="phone" placeholder="Phone" required><br>
-    <button type="submit">Submit</button>
-  </form>
-  <p id="msg"></p>
+  <div class="container">
+    <h2>📞 Contact Form</h2>
+    <form id="contact-form">
+      <input type="text" id="name" placeholder="Name" required><br>
+      <input type="text" id="phone" placeholder="Phone" required pattern="\d{10}" title="Enter 10 digit number"><br>
+      <button type="submit">Submit</button>
+    </form>
+    <p id="msg"></p>
+  </div>
+
   <script>
     const form = document.getElementById('contact-form');
+    const msg = document.getElementById('msg');
+
     form.addEventListener('submit', async (e) => {
       e.preventDefault();
-      const name = document.getElementById('name').value;
-      const phone = document.getElementById('phone').value;
-      const res = await fetch('/api/contact', {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({ name, phone })
-      });
-      const data = await res.json();
-      document.getElementById('msg').textContent = data.message;
+      const name = document.getElementById('name').value.trim();
+      const phone = document.getElementById('phone').value.trim();
+
+      if (!name || !phone) {
+        msg.style.color = 'red';
+        msg.textContent = 'Please fill all fields';
+        return;
+      }
+
+      try {
+        const res = await fetch('/api/contact', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name, phone })
+        });
+
+        const data = await res.json();
+        msg.style.color = 'green';
+        msg.textContent = data.message;
+        form.reset();
+      } catch (err) {
+        msg.style.color = 'red';
+        msg.textContent = 'Something went wrong!';
+      }
     });
   </script>
 </body>
 </html>
+
