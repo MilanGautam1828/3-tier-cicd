@@ -67,6 +67,10 @@ resource "aws_ecr_repository" "frontend_repo" {
   name                 = "${var.env}-frontend-repo"
   image_tag_mutability = "MUTABLE"
 
+  lifecycle {
+    ignore_changes = [name]
+  }
+
   tags = {
     Name = "${var.env}-frontend-repo"
   }
@@ -170,7 +174,7 @@ resource "aws_ecs_service" "frontend_service" {
   launch_type     = "FARGATE"
 
   network_configuration {
-    subnets         = [aws_subnet.public_a.id]
+    subnets          = [aws_subnet.public_a.id]
     assign_public_ip = true
     security_groups  = [aws_security_group.ecs_service.id]
   }
