@@ -4,27 +4,29 @@ on:
   push:
     branches:
       - main
+      - dev
   pull_request:
     branches:
       - main
-  workflow_dispatch:  # Enables manual trigger from GitHub UI
+      - dev
+  workflow_dispatch:
 
 jobs:
   terraform:
     runs-on: ubuntu-latest
 
+    env:
+      ENVIRONMENT: ${{ github.ref == 'refs/heads/main' && 'prod' || 'dev' }}
+
     steps:
-      # Step 1: Checkout code
       - name: Checkout code
         uses: actions/checkout@v2
 
-      # Step 2: Set up Terraform
       - name: Set up Terraform
         uses: hashicorp/setup-terraform@v2
         with:
-          terraform_version: 1.1.3  #Fixed version typo (was 1.11.3, which doesn't exist)
+          terraform_version: 1.1.3
 
-      # Step 3: Configure AWS credentials
       - name: Configure AWS Credentials
         uses: aws-actions/configure-aws-credentials@v1
         with:
@@ -32,17 +34,14 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ secrets.AWS_DEFAULT_REGION }}
 
-      # Step 4: Terraform Init
       - name: Terraform Init
         run: terraform init
         working-directory: ./terraform
 
-      # Step 5: Terraform Plan
       - name: Terraform Plan
-        run: terraform plan -out=tfplan
+        run: terraform plan -var="env=${ENVIRONMENT}" -out=tfplan
         working-directory: ./terraform
 
-      # Step 6: Terraform Apply
       - name: Terraform Apply
         run: terraform apply -auto-approve tfplan
         working-directory: ./terraform

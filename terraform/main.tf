@@ -1,56 +1,49 @@
-# Define the AWS provider and region
-provider "aws" {
-  region = "us-east-1"  # Set the region to us-east-1
+variable "env" {
+  description = "Environment name"
+  type        = string
 }
 
-# Create the VPC
-resource "aws_vpc" "threeVpc" {
-  cidr_block = "10.0.0.0/16"
-  enable_dns_support = true
+resource "aws_vpc" "main" {
+  cidr_block           = "10.0.0.0/16"
+  enable_dns_support   = true
   enable_dns_hostnames = true
   tags = {
-    Name = "three-tier-vpc"  # Name for the VPC
+    Name = "${var.env}-vpc"
   }
 }
 
-# Create a public subnet in us-east-1a
-resource "aws_subnet" "public_1" {
-  vpc_id                  = aws_vpc.threeVpc.id
-  cidr_block              = "10.0.1.0/24"
-  availability_zone       = "us-east-1a"
-  map_public_ip_on_launch = true
-  tags = {
-    Name = "public-subnet-1"  # Name for Public Subnet 1
-  }
-}
-
-# Create a public subnet in us-east-1b
-resource "aws_subnet" "public_2" {
-  vpc_id                  = aws_vpc.threeVpc.id
-  cidr_block              = "10.0.2.0/24"
-  availability_zone       = "us-east-1b"
-  map_public_ip_on_launch = true
-  tags = {
-    Name = "public-subnet-2"  # Name for Public Subnet 2
-  }
-}
-
-# Create a private subnet in us-east-1a
-resource "aws_subnet" "private_1" {
-  vpc_id            = aws_vpc.threeVpc.id
-  cidr_block        = "10.0.3.0/24"
+resource "aws_subnet" "public_a" {
+  vpc_id     = aws_vpc.main.id
+  cidr_block = "10.0.1.0/24"
   availability_zone = "us-east-1a"
   tags = {
-    Name = "private-subnet-1"  # Name for Private Subnet 1
+    Name = "${var.env}-public-a"
   }
 }
 
-# Create a private subnet in us-east-1b
-resource "aws_subnet" "private_2" {
-  vpc_id            = aws_vpc.threeVpc.id
-  cidr_block        = "10.0.4.0/24"
+resource "aws_subnet" "public_b" {
+  vpc_id     = aws_vpc.main.id
+  cidr_block = "10.0.2.0/24"
   availability_zone = "us-east-1b"
   tags = {
-    Name = "private-subnet-2"  # Name for Private Subnet 2
+    Name = "${var.env}-public-b"
+  }
+}
+
+resource "aws_subnet" "private_a" {
+  vpc_id     = aws_vpc.main.id
+  cidr_block = "10.0.3.0/24"
+  availability_zone = "us-east-1a"
+  tags = {
+    Name = "${var.env}-private-a"
+  }
+}
+
+resource "aws_subnet" "private_b" {
+  vpc_id     = aws_vpc.main.id
+  cidr_block = "10.0.4.0/24"
+  availability_zone = "us-east-1b"
+  tags = {
+    Name = "${var.env}-private-b"
   }
 }
