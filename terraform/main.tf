@@ -64,7 +64,7 @@ resource "aws_ecs_cluster" "main" {
 
 # ECR Repository
 resource "aws_ecr_repository" "frontend_repo" {
-  name = "${var.env}-frontend-repo"
+  name                 = "${var.env}-frontend-repo"
   image_tag_mutability = "MUTABLE"
 
   tags = {
@@ -93,4 +93,87 @@ resource "aws_ecr_lifecycle_policy" "frontend_repo_policy" {
       }
     ]
   })
+}
+
+##########################
+# NEW RESOURCES START HERE
+##########################
+
+# IAM Role for ECS Task Execution
+resource "aws_iam_role" "ecs_task_execution_role" {
+  name = "${var.env}-ecs-task-exec-role"
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect    = "Allow"
+      Principal = {
+        Service = "ecs-tasks.amazonaws.com"
+      }
+      Action = "sts:AssumeRole"
+    }]
+  })
+}
+
+resource "aws_iam_role_policy_attachment" "ecs_task_execution_attach" {
+  role       = aws_iam_role.ecs_task_execution_role.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy"
+}
+
+# Security Group for ECS service to allow HTTP inbound
+resource "aws_security_group" "ecs_service" {
+  name        = "${var.env}-ecs-sg"
+  description = "Allow HTTP inbound traffic"
+  vpc_id      = aws_vpc.main.id
+
+  ingress {
+    from_port   = 80
+    to_port     = 80
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+}
+
+# ECS Task Definition
+resource "aws_ecs_task_definition" "frontend_task" {
+  family                   = "${var.env}-frontend-task"
+  network_mode             = "awsvpc"
+  requires_compatibilities = ["FARGATE"]
+  cpu                      = "256"
+  memory                   = "512"
+  execution_role_arn       = aws_iam_role.ecs_task_execution_role.arn
+
+  container_definitions = jsonencode([{
+    name  = "frontend-container"
+    image = "${aws_ecr_repository.frontend_repo.repository_url}:latest"
+    essential = true
+    portMappings = [{
+      containerPort = 80
+      hostPort      = 80
+      protocol      = "tcp"
+    }]
+  }])
+}
+
+# ECS Service (running task on Fargate in public subnet)
+resource "aws_ecs_service" "frontend_service" {
+  name            = "${var.env}-frontend-service"
+  cluster         = aws_ecs_cluster.main.id
+  task_definition = aws_ecs_task_definition.frontend_task.arn
+  desired_count   = 1
+  launch_type     = "FARGATE"
+
+  network_configuration {
+    subnets         = [aws_subnet.public_a.id]
+    assign_public_ip = true
+    security_groups  = [aws_security_group.ecs_service.id]
+  }
+
+  depends_on = [aws_ecs_cluster.main]
 }
