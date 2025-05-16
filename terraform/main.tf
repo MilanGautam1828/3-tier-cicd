@@ -89,9 +89,9 @@ resource "aws_route_table_association" "private_b" {
 
 # Subnets
 resource "aws_subnet" "public_a" {
-  vpc_id            = aws_vpc.main.id
-  cidr_block        = "10.0.1.0/24"
-  availability_zone = "us-east-1a"
+  vpc_id                  = aws_vpc.main.id
+  cidr_block              = "10.0.1.0/24"
+  availability_zone       = "us-east-1a"
   map_public_ip_on_launch = true
   tags = {
     Name = "${var.env}-public-a"
@@ -99,9 +99,9 @@ resource "aws_subnet" "public_a" {
 }
 
 resource "aws_subnet" "public_b" {
-  vpc_id            = aws_vpc.main.id
-  cidr_block        = "10.0.2.0/24"
-  availability_zone = "us-east-1b"
+  vpc_id                  = aws_vpc.main.id
+  cidr_block              = "10.0.2.0/24"
+  availability_zone       = "us-east-1b"
   map_public_ip_on_launch = true
   tags = {
     Name = "${var.env}-public-b"
@@ -253,11 +253,6 @@ resource "aws_lb_listener" "backend_listener" {
     type             = "forward"
     target_group_arn = aws_lb_target_group.backend_tg.arn
   }
-}
-
-# Output ALB DNS Name
-output "backend_alb_dns" {
-  value = aws_lb.backend_alb.dns_name
 }
 
 # Task Definition - Frontend (with BACKEND_URL)
