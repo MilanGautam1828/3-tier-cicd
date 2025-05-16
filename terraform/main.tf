@@ -350,7 +350,7 @@ resource "aws_ecs_task_definition" "backend_task" {
     environment = [
       {
         name  = "MONGO_URI",
-        value = "mongodb://your-mongodb-uri" # Store this securely (e.g., Secrets Manager)
+        value = "mongodb://3.86.167.109:27017/contacts" # Store this securely (e.g., Secrets Manager)
       }
     ]
   }])
