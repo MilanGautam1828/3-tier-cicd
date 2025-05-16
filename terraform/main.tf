@@ -27,7 +27,7 @@ resource "aws_internet_gateway" "igw" {
 
 # NAT Gateway Elastic IP
 resource "aws_eip" "nat_eip" {
-  vpc = true
+  domain = "vpc" # Changed from 'vpc = true'
   tags = {
     Name = "${var.env}-nat-eip"
   }
@@ -229,10 +229,11 @@ resource "aws_lb" "backend_alb" {
 }
 
 resource "aws_lb_target_group" "backend_tg" {
-  name     = "${var.env}-backend-tg"
-  port     = 5000
-  protocol = "HTTP"
-  vpc_id   = aws_vpc.main.id
+  name        = "${var.env}-backend-tg"
+  port        = 5000
+  protocol    = "HTTP"
+  vpc_id      = aws_vpc.main.id
+  target_type = "ip" # Added this line
 
   health_check {
     path                = "/"
@@ -266,7 +267,7 @@ resource "aws_ecs_task_definition" "frontend_task" {
 
   container_definitions = jsonencode([{
     name  = "frontend-container",
-    image = "${aws_ecr_repository.frontend_repo.repository_url}:latest",
+    image = "${aws_ecr_repository.frontend_repo.repository_url}:latest", # Consider using specific tags in prod
     essential = true,
     portMappings = [{
       containerPort = 80,
@@ -291,12 +292,12 @@ resource "aws_ecs_service" "frontend_service" {
   launch_type     = "FARGATE"
 
   network_configuration {
-    subnets          = [aws_subnet.public_a.id]
+    subnets          = [aws_subnet.public_a.id] # Consider using both public_a and public_b for HA
     assign_public_ip = true
     security_groups  = [aws_security_group.ecs_service.id]
   }
 
-  depends_on = [aws_ecs_cluster.main]
+  depends_on = [aws_ecs_cluster.main, aws_lb_listener.backend_listener] # Added backend_listener dependency
 }
 
 # ECR Repository - Backend
@@ -339,7 +340,7 @@ resource "aws_ecs_task_definition" "backend_task" {
 
   container_definitions = jsonencode([{
     name  = "backend-container",
-    image = "${aws_ecr_repository.backend_repo.repository_url}:latest",
+    image = "${aws_ecr_repository.backend_repo.repository_url}:latest", # Consider using specific tags in prod
     essential = true,
     portMappings = [{
       containerPort = 5000,
@@ -349,7 +350,7 @@ resource "aws_ecs_task_definition" "backend_task" {
     environment = [
       {
         name  = "MONGO_URI",
-        value = "mongodb://your-mongodb-uri"
+        value = "mongodb://your-mongodb-uri" # Store this securely (e.g., Secrets Manager)
       }
     ]
   }])
@@ -364,7 +365,7 @@ resource "aws_ecs_service" "backend_service" {
   launch_type     = "FARGATE"
 
   network_configuration {
-    subnets          = [aws_subnet.private_b.id]
+    subnets          = [aws_subnet.private_b.id] # Consider using both private_a and private_b for HA
     assign_public_ip = false
     security_groups  = [aws_security_group.ecs_service.id]
   }
@@ -375,5 +376,8 @@ resource "aws_ecs_service" "backend_service" {
     container_port   = 5000
   }
 
-  depends_on = [aws_ecs_cluster.main, aws_lb_listener.backend_listener]
+  depends_on = [
+    aws_ecs_cluster.main,
+    aws_lb_listener.backend_listener # Ensures listener is ready before service tries to register
+  ]
 }
