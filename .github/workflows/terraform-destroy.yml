@@ -1,0 +1,44 @@
+name: Terraform Destroy
+
+on:
+  workflow_dispatch:
+    inputs:
+      env:
+        description: "Environment name (e.g., dev, prod)"
+        required: true
+        default: "dev"
+
+jobs:
+  terraform-destroy:
+    name: Destroy Terraform Infrastructure
+    runs-on: ubuntu-latest
+
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v3
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v2
+        with:
+          terraform_version: 1.6.6  # Change if needed
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: us-east-1
+
+      - name: Initialize Terraform
+        run: terraform init
+
+      - name: Select or Create Terraform Workspace
+        run: |
+          terraform workspace select ${{ github.event.inputs.env }} || terraform workspace new ${{ github.event.inputs.env }}
+
+      - name: Destroy Terraform Infrastructure
+        run: terraform destroy -auto-approve -var="env=${{ github.event.inputs.env }}"
