@@ -4,7 +4,7 @@ services:
       context: ./Frontend
       dockerfile: Dockerfile
     ports:
-      - "3000:3000"  # or your frontend port
+      - "3000:3000"
     depends_on:
       - backend
 
@@ -13,7 +13,7 @@ services:
       context: ./Backend
       dockerfile: Dockerfile
     ports:
-      - "5000:5000"  # or your backend port
+      - "5000:5000"
     environment:
       - MONGO_URI=mongodb://172.31.81.30:27017/contacts
 #here host.docker.inter refers tothe host machine itself

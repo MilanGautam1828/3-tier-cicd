@@ -1,4 +1,4 @@
-name: Terraform Deploy
+name: Terraform and ECS Deploy
 
 on:
   push:
@@ -19,6 +19,8 @@ jobs:
 
     env:
       ENVIRONMENT: ${{ github.ref == 'refs/heads/main' && 'prod' || 'dev' }}
+      AWS_REGION: ${{ secrets.AWS_DEFAULT_REGION }}
+      ECR_REPOSITORY: ${{ github.ref == 'refs/heads/main' && 'prod-frontend-repo' || 'dev-frontend-repo' }}
 
     steps:
       - name: Checkout code
@@ -29,21 +31,33 @@ jobs:
         with:
           terraform_version: 1.1.3
 
-      - name: Configure AWS Credentials
+      - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v1
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ${{ secrets.AWS_DEFAULT_REGION }}
+          aws-region: ${{ env.AWS_REGION }}
 
       - name: Terraform Init
         run: terraform init
         working-directory: ./terraform
 
       - name: Terraform Plan
-        run: terraform plan -var="env=${ENVIRONMENT}" -out=tfplan
+        run: terraform plan -var="env=${{ env.ENVIRONMENT }}" -out=tfplan
         working-directory: ./terraform
 
       - name: Terraform Apply
         run: terraform apply -auto-approve tfplan
         working-directory: ./terraform
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v1
+
+      - name: Build, Tag, and Push Docker Image to ECR
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+        run: |
+          docker build -t $ECR_REPOSITORY ./Frontend
+          docker tag $ECR_REPOSITORY:latest $ECR_REGISTRY/$ECR_REPOSITORY:latest
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:latest
