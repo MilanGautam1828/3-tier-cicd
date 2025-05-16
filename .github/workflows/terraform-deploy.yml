@@ -9,18 +9,17 @@ on:
     types: [closed]
     branches:
       - main
-      
   workflow_dispatch:
 
 jobs:
-  terraform:
-    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && github.event.pull_request.merged == true)
+  deploy:
     runs-on: ubuntu-latest
 
     env:
       ENVIRONMENT: ${{ github.ref == 'refs/heads/main' && 'prod' || 'dev' }}
       AWS_REGION: ${{ secrets.AWS_DEFAULT_REGION }}
-      ECR_REPOSITORY: ${{ github.ref == 'refs/heads/main' && 'prod-frontend-repo' || 'dev-frontend-repo' }}
+      ECR_FRONTEND_REPO: ${{ github.ref == 'refs/heads/main' && 'prod-frontend-repo' || 'dev-frontend-repo' }}
+      ECR_BACKEND_REPO: ${{ github.ref == 'refs/heads/main' && 'prod-backend-repo' || 'dev-backend-repo' }}
 
     steps:
       - name: Checkout code
@@ -54,10 +53,18 @@ jobs:
         id: login-ecr
         uses: aws-actions/amazon-ecr-login@v1
 
-      - name: Build, Tag, and Push Docker Image to ECR
+      - name: Build, Tag, and Push Frontend Docker Image to ECR
         env:
           ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
         run: |
-          docker build -t $ECR_REPOSITORY ./Frontend
-          docker tag $ECR_REPOSITORY:latest $ECR_REGISTRY/$ECR_REPOSITORY:latest
-          docker push $ECR_REGISTRY/$ECR_REPOSITORY:latest
+          docker build -t $ECR_FRONTEND_REPO ./Frontend
+          docker tag $ECR_FRONTEND_REPO:latest $ECR_REGISTRY/$ECR_FRONTEND_REPO:latest
+          docker push $ECR_REGISTRY/$ECR_FRONTEND_REPO:latest
+
+      - name: Build, Tag, and Push Backend Docker Image to ECR
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+        run: |
+          docker build -t $ECR_BACKEND_REPO ./Backend
+          docker tag $ECR_BACKEND_REPO:latest $ECR_REGISTRY/$ECR_BACKEND_REPO:latest
+          docker push $ECR_REGISTRY/$ECR_BACKEND_REPO:latest

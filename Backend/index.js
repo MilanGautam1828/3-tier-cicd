@@ -4,7 +4,7 @@ const cors = require('cors');
 const app = express();
 
 const PORT = process.env.PORT || 5000;
-const MONGO_URI = process.env.MONGO_URI || 'mongodb://localhost:27017/contacts';
+const MONGO_URI = process.env.MONGO_URI || 'mongodb://3.86.167.109:27017/contacts';
 
 app.use(cors());
 app.use(express.json());

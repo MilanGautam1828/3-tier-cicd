@@ -62,7 +62,7 @@ resource "aws_ecs_cluster" "main" {
   }
 }
 
-# ECR Repository
+# ECR Repository for Frontend
 resource "aws_ecr_repository" "frontend_repo" {
   name                 = "${var.env}-frontend-repo"
   image_tag_mutability = "MUTABLE"
@@ -76,21 +76,21 @@ resource "aws_ecr_repository" "frontend_repo" {
   }
 }
 
-# ECR Lifecycle Policy
+# ECR Lifecycle Policy - Frontend
 resource "aws_ecr_lifecycle_policy" "frontend_repo_policy" {
   repository = aws_ecr_repository.frontend_repo.name
 
   policy = jsonencode({
     rules = [
       {
-        rulePriority = 1
-        description  = "Remove untagged images older than 14 days"
+        rulePriority = 1,
+        description  = "Remove untagged images older than 14 days",
         selection = {
-          tagStatus   = "untagged"
-          countType   = "sinceImagePushed"
-          countUnit   = "days"
+          tagStatus   = "untagged",
+          countType   = "sinceImagePushed",
+          countUnit   = "days",
           countNumber = 14
-        }
+        },
         action = {
           type = "expire"
         }
@@ -99,20 +99,16 @@ resource "aws_ecr_lifecycle_policy" "frontend_repo_policy" {
   })
 }
 
-##########################
-# NEW RESOURCES START HERE
-##########################
-
 # IAM Role for ECS Task Execution
 resource "aws_iam_role" "ecs_task_execution_role" {
   name = "${var.env}-ecs-task-exec-role"
   assume_role_policy = jsonencode({
-    Version = "2012-10-17"
+    Version = "2012-10-17",
     Statement = [{
-      Effect    = "Allow"
+      Effect    = "Allow",
       Principal = {
         Service = "ecs-tasks.amazonaws.com"
-      }
+      },
       Action = "sts:AssumeRole"
     }]
   })
@@ -123,7 +119,7 @@ resource "aws_iam_role_policy_attachment" "ecs_task_execution_attach" {
   policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy"
 }
 
-# Security Group for ECS service to allow HTTP inbound
+# Security Group for ECS
 resource "aws_security_group" "ecs_service" {
   name        = "${var.env}-ecs-sg"
   description = "Allow HTTP inbound traffic"
@@ -136,6 +132,13 @@ resource "aws_security_group" "ecs_service" {
     cidr_blocks = ["0.0.0.0/0"]
   }
 
+  ingress {
+    from_port   = 5000
+    to_port     = 5000
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
   egress {
     from_port   = 0
     to_port     = 0
@@ -144,7 +147,7 @@ resource "aws_security_group" "ecs_service" {
   }
 }
 
-# ECS Task Definition
+# Task Definition - Frontend
 resource "aws_ecs_task_definition" "frontend_task" {
   family                   = "${var.env}-frontend-task"
   network_mode             = "awsvpc"
@@ -154,18 +157,18 @@ resource "aws_ecs_task_definition" "frontend_task" {
   execution_role_arn       = aws_iam_role.ecs_task_execution_role.arn
 
   container_definitions = jsonencode([{
-    name  = "frontend-container"
-    image = "${aws_ecr_repository.frontend_repo.repository_url}:latest"
-    essential = true
+    name  = "frontend-container",
+    image = "${aws_ecr_repository.frontend_repo.repository_url}:latest",
+    essential = true,
     portMappings = [{
-      containerPort = 80
-      hostPort      = 80
+      containerPort = 80,
+      hostPort      = 80,
       protocol      = "tcp"
     }]
   }])
 }
 
-# ECS Service (running task on Fargate in public subnet)
+# ECS Service - Frontend
 resource "aws_ecs_service" "frontend_service" {
   name            = "${var.env}-frontend-service"
   cluster         = aws_ecs_cluster.main.id
@@ -175,6 +178,79 @@ resource "aws_ecs_service" "frontend_service" {
 
   network_configuration {
     subnets          = [aws_subnet.public_a.id]
+    assign_public_ip = true
+    security_groups  = [aws_security_group.ecs_service.id]
+  }
+
+  depends_on = [aws_ecs_cluster.main]
+}
+
+# ECR Repository - Backend
+resource "aws_ecr_repository" "backend_repo" {
+  name                 = "${var.env}-backend-repo"
+  image_tag_mutability = "MUTABLE"
+  tags = {
+    Name = "${var.env}-backend-repo"
+  }
+}
+
+resource "aws_ecr_lifecycle_policy" "backend_repo_policy" {
+  repository = aws_ecr_repository.backend_repo.name
+
+  policy = jsonencode({
+    rules = [{
+      rulePriority = 1,
+      description  = "Remove untagged images older than 14 days",
+      selection = {
+        tagStatus   = "untagged",
+        countType   = "sinceImagePushed",
+        countUnit   = "days",
+        countNumber = 14
+      },
+      action = {
+        type = "expire"
+      }
+    }]
+  })
+}
+
+# ECS Task Definition - Backend
+resource "aws_ecs_task_definition" "backend_task" {
+  family                   = "${var.env}-backend-task"
+  network_mode             = "awsvpc"
+  requires_compatibilities = ["FARGATE"]
+  cpu                      = "256"
+  memory                   = "512"
+  execution_role_arn       = aws_iam_role.ecs_task_execution_role.arn
+
+  container_definitions = jsonencode([{
+    name  = "backend-container",
+    image = "${aws_ecr_repository.backend_repo.repository_url}:latest",
+    essential = true,
+    portMappings = [{
+      containerPort = 5000,
+      hostPort      = 5000,
+      protocol      = "tcp"
+    }],
+    environment = [
+      {
+        name  = "MONGO_URI",
+        value = "mongodb://your-mongodb-uri"
+      }
+    ]
+  }])
+}
+
+# ECS Service - Backend
+resource "aws_ecs_service" "backend_service" {
+  name            = "${var.env}-backend-service"
+  cluster         = aws_ecs_cluster.main.id
+  task_definition = aws_ecs_task_definition.backend_task.arn
+  desired_count   = 1
+  launch_type     = "FARGATE"
+
+  network_configuration {
+    subnets          = [aws_subnet.public_b.id]
     assign_public_ip = true
     security_groups  = [aws_security_group.ecs_service.id]
   }
