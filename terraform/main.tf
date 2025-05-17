@@ -162,7 +162,7 @@ resource "aws_iam_role_policy_attachment" "ecs_task_execution_attach" {
 # --- End ECS Cluster & IAM Role ---
 
 
-# --- ECR Repositories & Policies (No changes here) ---
+# --- ECR Repositories & Policies (MODIFIED ECR Policy JSON) ---
 resource "aws_ecr_repository" "frontend_repo" {
   name                 = "${var.env}-frontend-repo"
   image_tag_mutability = "MUTABLE"
@@ -172,7 +172,36 @@ resource "aws_ecr_repository" "frontend_repo" {
 
 resource "aws_ecr_lifecycle_policy" "frontend_repo_policy" {
   repository = aws_ecr_repository.frontend_repo.name
-  policy     = jsonencode({ /* ... same policy ... */ })
+  policy = jsonencode({
+    rules = [
+      {
+        "rulePriority": 1,
+        "description": "Expire untagged images older than 14 days to keep the repository clean and reduce storage costs from old, unreferenced image layers for the frontend service.",
+        "selection": {
+          "tagStatus": "untagged",
+          "countType": "sinceImagePushed",
+          "countUnit": "days",
+          "countNumber": 14
+        },
+        "action": {
+          "type": "expire"
+        }
+      },
+      {
+        "rulePriority": 2,
+        "description": "Keep only the last 5 tagged images (e.g., starting with 'v') to manage storage for versioned releases, removing older tagged images for the frontend service.",
+        "selection": {
+          "tagStatus": "tagged",
+          "tagPrefixList": ["v"],
+          "countType": "imageCountMoreThan",
+          "countNumber": 5
+        },
+        "action": {
+          "type": "expire"
+        }
+      }
+    ]
+  })
 }
 
 resource "aws_ecr_repository" "backend_repo" {
@@ -183,7 +212,36 @@ resource "aws_ecr_repository" "backend_repo" {
 
 resource "aws_ecr_lifecycle_policy" "backend_repo_policy" {
   repository = aws_ecr_repository.backend_repo.name
-  policy     = jsonencode({ /* ... same policy ... */ })
+  policy = jsonencode({
+    rules = [
+      {
+        "rulePriority": 1,
+        "description": "Expire untagged images older than 14 days to keep the repository clean and reduce storage costs from old, unreferenced image layers for the backend service.",
+        "selection": {
+          "tagStatus": "untagged",
+          "countType": "sinceImagePushed",
+          "countUnit": "days",
+          "countNumber": 14
+        },
+        "action": {
+          "type": "expire"
+        }
+      },
+      {
+        "rulePriority": 2,
+        "description": "Keep only the last 5 tagged images (e.g., starting with 'v') to manage storage for versioned releases, removing older tagged images for the backend service.",
+        "selection": {
+          "tagStatus": "tagged",
+          "tagPrefixList": ["v"],
+          "countType": "imageCountMoreThan",
+          "countNumber": 5
+        },
+        "action": {
+          "type": "expire"
+        }
+      }
+    ]
+  })
 }
 # --- End ECR ---
 
@@ -399,20 +457,27 @@ resource "aws_lb_target_group" "backend_tg" {
   protocol    = "HTTP"
   vpc_id      = aws_vpc.main.id
   target_type = "ip"
-  health_check { /* ... same ... */ }
+  health_check {
+    path                = "/"       # Assuming backend has a GET / for health
+    protocol            = "HTTP"
+    matcher             = "200-399" # Backend health check
+    interval            = 30
+    timeout             = 5
+    healthy_threshold   = 2
+    unhealthy_threshold = 2
+  }
   tags = { Name = "${var.env}-backend-tg" }
 }
 
-# Backend Listener (No change)
-# Backend Listener (New with modifed listner name)
+# Backend Listener (Corrected)
 resource "aws_lb_listener" "backend_listener" {
   load_balancer_arn = aws_lb.backend_alb.arn
   port              = 5000
   protocol          = "HTTP"
 
   default_action {
-    type             = "forward" # You need to specify the action type
-    target_group_arn = aws_lb_target_group.backend_tg.arn # And the target group
+    type             = "forward"
+    target_group_arn = aws_lb_target_group.backend_tg.arn
   }
 }
 
@@ -431,6 +496,7 @@ resource "aws_ecs_task_definition" "frontend_task" {
     essential = true,
     portMappings = [{ containerPort = 80, hostPort = 80, protocol = "tcp" }],
     environment  = [{ name = "BACKEND_URL", value = "http://${aws_lb.backend_alb.dns_name}:5000" }]
+    // Ensure your frontend app reads BACKEND_URL and its server.js listens on port 80
   }])
   tags = { Name = "${var.env}-frontend-task" }
 }
@@ -480,6 +546,7 @@ resource "aws_ecs_task_definition" "backend_task" {
     essential = true,
     portMappings = [{ containerPort = 5000, hostPort = 5000, protocol = "tcp" }],
     environment  = [{ name = "MONGO_URI", value = "mongodb://3.86.167.109:27017/contacts" }] # Ensure this is correct and secure
+    // Ensure your backend app (index.js) listens on port 5000 and has GET / for health check
   }])
   tags = { Name = "${var.env}-backend-task" }
 }
@@ -512,11 +579,12 @@ resource "aws_ecs_service" "backend_service" {
 }
 
 
-# --- NEW: Route 53 Records for the Frontend ALB ---
+# --- NEW: Route 53 Records for the Frontend ALB (MODIFIED to include allow_overwrite) ---
 resource "aws_route53_record" "frontend_apex" {
-  zone_id = data.aws_route53_zone.primary.zone_id
-  name    = var.domain_name
-  type    = "A"
+  zone_id         = data.aws_route53_zone.primary.zone_id
+  name            = var.domain_name
+  type            = "A"
+  allow_overwrite = true # Added
   alias {
     name                   = aws_lb.frontend_alb.dns_name
     zone_id                = aws_lb.frontend_alb.zone_id
@@ -525,9 +593,10 @@ resource "aws_route53_record" "frontend_apex" {
 }
 
 resource "aws_route53_record" "frontend_www" {
-  zone_id = data.aws_route53_zone.primary.zone_id
-  name    = "www.${var.domain_name}"
-  type    = "A"
+  zone_id         = data.aws_route53_zone.primary.zone_id
+  name            = "www.${var.domain_name}"
+  type            = "A"
+  allow_overwrite = true # Added
   alias {
     name                   = aws_lb.frontend_alb.dns_name
     zone_id                = aws_lb.frontend_alb.zone_id
