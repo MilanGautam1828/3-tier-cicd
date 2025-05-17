@@ -404,11 +404,16 @@ resource "aws_lb_target_group" "backend_tg" {
 }
 
 # Backend Listener (No change)
+# Backend Listener (New with modifed listner name)
 resource "aws_lb_listener" "backend_listener" {
   load_balancer_arn = aws_lb.backend_alb.arn
   port              = 5000
   protocol          = "HTTP"
-  default_action { /* ... same ... */ }
+
+  default_action {
+    type             = "forward" # You need to specify the action type
+    target_group_arn = aws_lb_target_group.backend_tg.arn # And the target group
+  }
 }
 
 
