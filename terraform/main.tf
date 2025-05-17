@@ -500,14 +500,14 @@ resource "aws_lb_listener" "backend_listener" {
 }
 # --- End Backend ALB ---
 
-# --- NEW: VPC Interface Endpoint for MongoDB ---
+# --- NEW: VPC Interface Endpoint for MongoDB (MODIFIED subnet_ids) ---
 data "aws_region" "current" {} # To get the current region
 
 resource "aws_vpc_endpoint" "mongodb_interface_endpoint" {
   vpc_id             = aws_vpc.main.id
   service_name       = "com.amazonaws.vpce.us-east-1.vpce-svc-09f0c19c8688e5504" # HARDCODED SERVICE NAME
   vpc_endpoint_type  = "Interface"
-  subnet_ids         = [aws_subnet.private_a.id, aws_subnet.private_b.id] # Subnets for endpoint ENIs
+  subnet_ids         = [aws_subnet.private_a.id] # CHANGED: Only use subnet in the supported AZ (us-east-1a)
   security_group_ids = [aws_security_group.mongodb_vpce_sg.id]
   private_dns_enabled = true
   tags                 = { Name = "${var.env}-mongodb-interface-vpce" }
@@ -528,9 +528,6 @@ resource "aws_secretsmanager_secret" "mongo_uri_secret" {
 resource "null_resource" "update_mongo_uri_secret" {
   # Trigger this when the VPC endpoint's DNS entries change or the base secret ARN changes
   triggers = {
-    # Using a join to create a single string trigger from the list of DNS names
-    # This ensures it re-runs if the DNS names actually change.
-    # The join also handles the case where dns_entry might be empty initially during planning.
     vpce_dns_trigger = join(",", sort(aws_vpc_endpoint.mongodb_interface_endpoint.dns_entry.*.dns_name))
     secret_arn       = aws_secretsmanager_secret.mongo_uri_secret.arn
   }
@@ -538,19 +535,18 @@ resource "null_resource" "update_mongo_uri_secret" {
   # Ensure the VPC endpoint and the base secret resource exist before trying to update
   depends_on = [
     aws_vpc_endpoint.mongodb_interface_endpoint,
-    aws_secretsmanager_secret.mongo_uri_secret # Depends on the secret shell
+    aws_secretsmanager_secret.mongo_uri_secret 
   ]
 
   provisioner "local-exec" {
-    interpreter = ["bash", "-c"] # Explicitly use bash
+    interpreter = ["bash", "-c"] 
     command     = <<EOT
-      set -e # Exit immediately if a command exits with a non-zero status.
+      set -e 
       DNS_ENTRIES_COUNT=$(echo '${length(aws_vpc_endpoint.mongodb_interface_endpoint.dns_entry.*.dns_name)}' | tr -d '[:space:]')
       echo "Number of DNS entries found for MongoDB VPCE: $DNS_ENTRIES_COUNT"
 
       if [ "$DNS_ENTRIES_COUNT" -gt 0 ]; then
         echo "VPC Endpoint DNS entries found. Updating secret..."
-        # Using element() to get the first DNS name from the list
         FIRST_DNS_NAME=$(echo '${element(aws_vpc_endpoint.mongodb_interface_endpoint.dns_entry.*.dns_name, 0)}' | tr -d '[:space:]')
         echo "Using first DNS name for MONGO_URI: $FIRST_DNS_NAME"
 
@@ -560,9 +556,7 @@ resource "null_resource" "update_mongo_uri_secret" {
           --region "${data.aws_region.current.name}"
         echo "MongoDB URI secret updated successfully in Secrets Manager."
       else
-        echo "WARNING: No VPC Endpoint DNS entries found for MongoDB. Secret not updated. This might be an issue if this is not the first apply."
-        # Depending on your strategy, you might want to fail the apply if no DNS entries are found after creation.
-        # For now, it will just print a warning and the task definition might use an old/no secret value initially.
+        echo "WARNING: No VPC Endpoint DNS entries found for MongoDB. Secret not updated."
       fi
     EOT
   }
@@ -592,13 +586,10 @@ resource "aws_iam_policy" "ecs_backend_task_secrets_policy" {
         Effect   = "Allow",
         Action   = [
           "secretsmanager:GetSecretValue",
-          "kms:Decrypt" # Required if the secret is encrypted with a customer-managed KMS key
-                        # or if AWS-managed KMS key requires explicit decrypt by the role.
+          "kms:Decrypt" 
         ],
         Resource = [
           aws_secretsmanager_secret.mongo_uri_secret.arn
-          # If using a custom KMS key for the secret, add its ARN here for kms:Decrypt
-          # e.g., "arn:aws:kms:us-east-1:YOUR_ACCOUNT_ID:key/YOUR_KMS_KEY_ID"
         ]
       }
     ]
@@ -631,15 +622,7 @@ resource "aws_ecs_task_definition" "frontend_task" {
   tags = { Name = "${var.env}-frontend-task" }
 }
 
-# --- NEW: CloudWatch Log Group for Backend ECS Tasks ---
-resource "aws_cloudwatch_log_group" "backend_ecs_logs" {
-  name              = "/ecs/${var.env}-backend-task" # Matches task family for consistency
-  retention_in_days = 30 # Or your desired retention period
-  tags = {
-    Name        = "${var.env}-backend-ecs-logs"
-    Environment = var.env
-  }
-}
+# REMOVED: resource "aws_cloudwatch_log_group" "backend_ecs_logs"
 
 resource "aws_ecs_task_definition" "backend_task" {
   family                   = "${var.env}-backend-task"
@@ -655,16 +638,16 @@ resource "aws_ecs_task_definition" "backend_task" {
     image     = "${aws_ecr_repository.backend_repo.repository_url}:latest",
     essential = true,
     portMappings = [{ containerPort = 5000, hostPort = 5000, protocol = "tcp" }],
-    secrets = [ # Fetch MONGO_URI from Secrets Manager
+    secrets = [ 
       {
-        name      = "MONGO_URI", # Env var name in container
+        name      = "MONGO_URI", 
         valueFrom = aws_secretsmanager_secret.mongo_uri_secret.arn
       }
     ],
     logConfiguration = {
       logDriver = "awslogs",
       options = {
-        "awslogs-group"         = aws_cloudwatch_log_group.backend_ecs_logs.name,
+        "awslogs-group"         = "/ecs/${var.env}-backend-task", # ECS will auto-create this if it doesn't exist
         "awslogs-region"        = data.aws_region.current.name,
         "awslogs-stream-prefix" = "ecs"
       }
@@ -673,8 +656,8 @@ resource "aws_ecs_task_definition" "backend_task" {
   }])
 
   depends_on = [
-    null_resource.update_mongo_uri_secret, # Ensure secret is populated before task def uses its ARN
-    aws_cloudwatch_log_group.backend_ecs_logs
+    null_resource.update_mongo_uri_secret # Ensure secret is populated before task def uses its ARN
+    # REMOVED: aws_cloudwatch_log_group.backend_ecs_logs from depends_on
   ]
   tags = { Name = "${var.env}-backend-task" }
 }
@@ -691,7 +674,7 @@ resource "aws_ecs_service" "frontend_service" {
 
   network_configuration {
     subnets          = [aws_subnet.public_a.id, aws_subnet.public_b.id]
-    assign_public_ip = true # Kept true for ECR pull via IGW for now
+    assign_public_ip = true 
     security_groups  = [aws_security_group.frontend_tasks_sg.id]
   }
 
@@ -731,7 +714,7 @@ resource "aws_ecs_service" "backend_service" {
   depends_on = [
     aws_ecs_cluster.main,
     aws_lb_listener.backend_listener,
-    aws_vpc_endpoint.mongodb_interface_endpoint # Ensure endpoint is ready
+    aws_vpc_endpoint.mongodb_interface_endpoint 
   ]
   tags = { Name = "${var.env}-backend-service" }
 }
