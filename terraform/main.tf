@@ -9,6 +9,7 @@ variable "domain_name" {
   default     = "rockymeranaam.site" # Change this if your domain is different
 }
 
+
 provider "aws" {
   region = "us-east-1"
 }
@@ -246,13 +247,12 @@ resource "aws_ecr_lifecycle_policy" "backend_repo_policy" {
 # --- End ECR ---
 
 
-# --- NEW: Route 53 Data Source ---
+# --- Route 53 & ACM ---
 data "aws_route53_zone" "primary" {
   name         = "${var.domain_name}." # Note the trailing dot
   private_zone = false
 }
 
-# --- NEW: ACM Certificate for Frontend Domain ---
 resource "aws_acm_certificate" "frontend_cert" {
   domain_name               = var.domain_name
   subject_alternative_names = ["www.${var.domain_name}"]
@@ -264,7 +264,6 @@ resource "aws_acm_certificate" "frontend_cert" {
   lifecycle { create_before_destroy = true }
 }
 
-# --- NEW: Automated DNS Validation Records for ACM Certificate using Route 53 ---
 resource "aws_route53_record" "frontend_cert_validation_records" {
   for_each = {
     for dvo in aws_acm_certificate.frontend_cert.domain_validation_options : dvo.domain_name => {
@@ -281,14 +280,14 @@ resource "aws_route53_record" "frontend_cert_validation_records" {
   zone_id         = data.aws_route53_zone.primary.zone_id
 }
 
-# --- NEW: ACM Certificate Validation ---
 resource "aws_acm_certificate_validation" "frontend_cert_validation" {
   certificate_arn         = aws_acm_certificate.frontend_cert.arn
   validation_record_fqdns = [for record in aws_route53_record.frontend_cert_validation_records : record.fqdn]
 }
+# --- End Route 53 & ACM ---
 
 
-# --- MODIFIED: Security Groups ---
+# --- Security Groups ---
 # Security Group for Public Frontend ALB
 resource "aws_security_group" "frontend_alb_sg" {
   name        = "${var.env}-frontend-alb-sg"
@@ -327,7 +326,7 @@ resource "aws_security_group" "frontend_tasks_sg" {
     protocol        = "tcp"
     security_groups = [aws_security_group.frontend_alb_sg.id]
   }
-  egress { # To backend ALB and internet (via NAT)
+  egress { # To backend ALB and internet (via IGW as tasks have public IP for ECR pull)
     from_port   = 0
     to_port     = 0
     protocol    = "-1"
@@ -352,7 +351,7 @@ resource "aws_security_group" "backend_alb_sg" {
     from_port   = 0
     to_port     = 0
     protocol    = "-1"
-    cidr_blocks = ["0.0.0.0/0"] # Can be more specific to backend_tasks_sg if needed
+    cidr_blocks = ["0.0.0.0/0"]
   }
   tags = { Name = "${var.env}-backend-alb-sg" }
 }
@@ -369,7 +368,7 @@ resource "aws_security_group" "backend_tasks_sg" {
     protocol        = "tcp"
     security_groups = [aws_security_group.backend_alb_sg.id] # Source is backend ALB's SG
   }
-  egress { # To MongoDB and internet (via NAT)
+  egress { # To MongoDB via VPCE and internet (via NAT)
     from_port   = 0
     to_port     = 0
     protocol    = "-1"
@@ -377,10 +376,33 @@ resource "aws_security_group" "backend_tasks_sg" {
   }
   tags = { Name = "${var.env}-backend-tasks-sg" }
 }
+
+# --- NEW: Security Group for MongoDB VPC Interface Endpoint ---
+resource "aws_security_group" "mongodb_vpce_sg" {
+  name        = "${var.env}-mongodb-vpce-sg"
+  description = "Allow traffic to MongoDB VPC Endpoint from backend tasks"
+  vpc_id      = aws_vpc.main.id
+
+  ingress {
+    description     = "From Backend Tasks to MongoDB Endpoint"
+    from_port       = 27017 # MongoDB port
+    to_port         = 27017
+    protocol        = "tcp"
+    security_groups = [aws_security_group.backend_tasks_sg.id] # Source is backend tasks SG
+  }
+
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+  tags = { Name = "${var.env}-mongodb-vpce-sg" }
+}
 # --- End Security Groups ---
 
 
-# --- NEW: Public Application Load Balancer for Frontend ---
+# --- Frontend ALB & Listeners ---
 resource "aws_lb" "frontend_alb" {
   name                       = "${var.env}-frontend-alb"
   internal                   = false
@@ -391,7 +413,6 @@ resource "aws_lb" "frontend_alb" {
   tags                       = { Name = "${var.env}-frontend-alb" }
 }
 
-# --- NEW: Target Group for Frontend ECS Service ---
 resource "aws_lb_target_group" "frontend_tg" {
   name        = "${var.env}-frontend-tg"
   port        = 80 # Frontend container port
@@ -410,7 +431,6 @@ resource "aws_lb_target_group" "frontend_tg" {
   tags = { Name = "${var.env}-frontend-tg" }
 }
 
-# --- NEW: ALB Listener for HTTP (Port 80) - Redirects to HTTPS ---
 resource "aws_lb_listener" "frontend_http" {
   load_balancer_arn = aws_lb.frontend_alb.arn
   port              = 80
@@ -425,7 +445,6 @@ resource "aws_lb_listener" "frontend_http" {
   }
 }
 
-# --- NEW: ALB Listener for HTTPS (Port 443) ---
 resource "aws_lb_listener" "frontend_https" {
   load_balancer_arn = aws_lb.frontend_alb.arn
   port              = 443
@@ -438,19 +457,19 @@ resource "aws_lb_listener" "frontend_https" {
   }
   depends_on = [aws_acm_certificate_validation.frontend_cert_validation]
 }
+# --- End Frontend ALB ---
 
 
-# --- Internal ALB for Backend (Modified to use new backend_alb_sg) ---
+# --- Backend ALB & Listeners ---
 resource "aws_lb" "backend_alb" {
   name               = "${var.env}-backend-alb"
   internal           = true
   load_balancer_type = "application"
   subnets            = [aws_subnet.private_a.id, aws_subnet.private_b.id]
-  security_groups    = [aws_security_group.backend_alb_sg.id] # CHANGED
+  security_groups    = [aws_security_group.backend_alb_sg.id]
   tags               = { Name = "${var.env}-backend-alb" }
 }
 
-# Backend Target Group (No change other than what you had)
 resource "aws_lb_target_group" "backend_tg" {
   name        = "${var.env}-backend-tg"
   port        = 5000
@@ -469,7 +488,6 @@ resource "aws_lb_target_group" "backend_tg" {
   tags = { Name = "${var.env}-backend-tg" }
 }
 
-# Backend Listener (Corrected)
 resource "aws_lb_listener" "backend_listener" {
   load_balancer_arn = aws_lb.backend_alb.arn
   port              = 5000
@@ -480,9 +498,108 @@ resource "aws_lb_listener" "backend_listener" {
     target_group_arn = aws_lb_target_group.backend_tg.arn
   }
 }
+# --- End Backend ALB ---
+
+# --- NEW: VPC Interface Endpoint for MongoDB ---
+data "aws_region" "current" {} # To get the current region
+
+resource "aws_vpc_endpoint" "mongodb_interface_endpoint" {
+  vpc_id             = aws_vpc.main.id
+  service_name       = "com.amazonaws.vpce.us-east-1.vpce-svc-09f0c19c8688e5504" # HARDCODED SERVICE NAME
+  vpc_endpoint_type  = "Interface"
+  subnet_ids         = [aws_subnet.private_a.id, aws_subnet.private_b.id] # Subnets for endpoint ENIs
+  security_group_ids = [aws_security_group.mongodb_vpce_sg.id]
+  private_dns_enabled = true
+  tags                 = { Name = "${var.env}-mongodb-interface-vpce" }
+}
+# --- End MongoDB VPC Endpoint ---
+
+# --- NEW: AWS Secrets Manager Secret for MongoDB URI ---
+resource "aws_secretsmanager_secret" "mongo_uri_secret" {
+  name        = "${var.env}/mongo_uri"
+  description = "MongoDB connection URI for the backend service using PrivateLink"
+  tags = {
+    Name        = "${var.env}-mongo-uri-secret"
+    Environment = var.env
+  }
+}
+
+# --- NEW: null_resource to update the secret after VPC endpoint is created ---
+resource "null_resource" "update_mongo_uri_secret" {
+  # Trigger this when the VPC endpoint's DNS entries change or the base secret ARN changes
+  triggers = {
+    # Using a join to create a single string trigger from the list of DNS names
+    # This ensures it re-runs if the DNS names actually change.
+    # The join also handles the case where dns_entry might be empty initially during planning.
+    vpce_dns_trigger = join(",", sort(aws_vpc_endpoint.mongodb_interface_endpoint.dns_entry.*.dns_name))
+    secret_arn       = aws_secretsmanager_secret.mongo_uri_secret.arn
+  }
+
+  # Ensure the VPC endpoint and the base secret resource exist before trying to update
+  depends_on = [
+    aws_vpc_endpoint.mongodb_interface_endpoint,
+    aws_secretsmanager_secret.mongo_uri_secret # Depends on the secret shell
+  ]
+
+  provisioner "local-exec" {
+    # Only run this if there are DNS entries available
+    # The command will only proceed if the first DNS entry is not empty
+    when    = length(aws_vpc_endpoint.mongodb_interface_endpoint.dns_entry.*.dns_name) > 0
+    command = <<EOT
+      aws secretsmanager put-secret-value \
+        --secret-id "${aws_secretsmanager_secret.mongo_uri_secret.id}" \
+        --secret-string "mongodb://${element(aws_vpc_endpoint.mongodb_interface_endpoint.dns_entry.*.dns_name, 0)}:27017/contacts" \
+        --region "${data.aws_region.current.name}"
+    EOT
+    # interpreter = ["bash", "-c"] # Optional: specify interpreter if needed, default is usually fine
+  }
+}
+
+# --- NEW: IAM Role and Policy for Backend ECS Task to access Secrets Manager ---
+resource "aws_iam_role" "ecs_backend_task_role" {
+  name = "${var.env}-ecs-backend-task-role"
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17",
+    Statement = [{
+      Effect    = "Allow",
+      Principal = { Service = "ecs-tasks.amazonaws.com" },
+      Action    = "sts:AssumeRole"
+    }]
+  })
+  tags = { Name = "${var.env}-ecs-backend-task-role" }
+}
+
+resource "aws_iam_policy" "ecs_backend_task_secrets_policy" {
+  name        = "${var.env}-ecs-backend-task-secrets-policy"
+  description = "Allows ECS backend tasks to read specific secrets from Secrets Manager"
+  policy = jsonencode({
+    Version = "2012-10-17",
+    Statement = [
+      {
+        Effect   = "Allow",
+        Action   = [
+          "secretsmanager:GetSecretValue",
+          "kms:Decrypt" # Required if the secret is encrypted with a customer-managed KMS key
+                        # or if AWS-managed KMS key requires explicit decrypt by the role.
+        ],
+        Resource = [
+          aws_secretsmanager_secret.mongo_uri_secret.arn,
+          # If using a custom KMS key for the secret, add its ARN here for kms:Decrypt
+          # e.g., "arn:aws:kms:us-east-1:YOUR_ACCOUNT_ID:key/YOUR_KMS_KEY_ID"
+        ]
+      }
+    ]
+  })
+  tags = { Name = "${var.env}-ecs-backend-task-secrets-policy" }
+}
+
+resource "aws_iam_role_policy_attachment" "ecs_backend_task_secrets_attach" {
+  role       = aws_iam_role.ecs_backend_task_role.name
+  policy_arn = aws_iam_policy.ecs_backend_task_secrets_policy.arn
+}
 
 
-# --- Task Definition - Frontend (No change to definition itself) ---
+# --- ECS Task Definitions ---
 resource "aws_ecs_task_definition" "frontend_task" {
   family                   = "${var.env}-frontend-task"
   network_mode             = "awsvpc"
@@ -501,18 +618,68 @@ resource "aws_ecs_task_definition" "frontend_task" {
   tags = { Name = "${var.env}-frontend-task" }
 }
 
-# --- ECS Service - Frontend (MODIFIED SIGNIFICANTLY) ---
+# --- NEW: CloudWatch Log Group for Backend ECS Tasks ---
+resource "aws_cloudwatch_log_group" "backend_ecs_logs" {
+  name              = "/ecs/${var.env}-backend-task" # Matches task family for consistency
+  retention_in_days = 30 # Or your desired retention period
+  tags = {
+    Name        = "${var.env}-backend-ecs-logs"
+    Environment = var.env
+  }
+}
+
+resource "aws_ecs_task_definition" "backend_task" {
+  family                   = "${var.env}-backend-task"
+  network_mode             = "awsvpc"
+  requires_compatibilities = ["FARGATE"]
+  cpu                      = "256"
+  memory                   = "512"
+  execution_role_arn       = aws_iam_role.ecs_task_execution_role.arn
+  task_role_arn            = aws_iam_role.ecs_backend_task_role.arn # Assign the task role
+
+  container_definitions = jsonencode([{
+    name      = "backend-container",
+    image     = "${aws_ecr_repository.backend_repo.repository_url}:latest",
+    essential = true,
+    portMappings = [{ containerPort = 5000, hostPort = 5000, protocol = "tcp" }],
+    secrets = [ # Fetch MONGO_URI from Secrets Manager
+      {
+        name      = "MONGO_URI", # Env var name in container
+        valueFrom = aws_secretsmanager_secret.mongo_uri_secret.arn
+      }
+    ],
+    logConfiguration = {
+      logDriver = "awslogs",
+      options = {
+        "awslogs-group"         = aws_cloudwatch_log_group.backend_ecs_logs.name,
+        "awslogs-region"        = data.aws_region.current.name,
+        "awslogs-stream-prefix" = "ecs"
+      }
+    }
+    // Ensure your backend app (index.js) listens on port 5000 and has GET / for health check
+  }])
+
+  depends_on = [
+    null_resource.update_mongo_uri_secret, # Ensure secret is populated before task def uses its ARN
+    aws_cloudwatch_log_group.backend_ecs_logs
+  ]
+  tags = { Name = "${var.env}-backend-task" }
+}
+# --- End ECS Task Definitions ---
+
+
+# --- ECS Services ---
 resource "aws_ecs_service" "frontend_service" {
   name            = "${var.env}-frontend-service"
   cluster         = aws_ecs_cluster.main.id
   task_definition = aws_ecs_task_definition.frontend_task.arn
-  desired_count   = 2 # CHANGED to 2 containers
+  desired_count   = 2
   launch_type     = "FARGATE"
 
   network_configuration {
-    subnets          = [aws_subnet.public_a.id, aws_subnet.public_b.id] # Spread across AZs
-    assign_public_ip = true # CHANGED: No direct public IP (Changed again for ECR issue)
-    security_groups  = [aws_security_group.frontend_tasks_sg.id] # CHANGED to specific SG
+    subnets          = [aws_subnet.public_a.id, aws_subnet.public_b.id]
+    assign_public_ip = true # Kept true for ECR pull via IGW for now
+    security_groups  = [aws_security_group.frontend_tasks_sg.id]
   }
 
   load_balancer {
@@ -521,48 +688,25 @@ resource "aws_ecs_service" "frontend_service" {
     container_port   = 80
   }
 
-  # Ensures ALB and listeners are ready
   depends_on = [
     aws_ecs_cluster.main,
     aws_lb_listener.frontend_https,
     aws_lb_listener.frontend_http
-    # aws_lb_listener.backend_listener # This dependency might not be strictly needed for frontend service itself anymore
   ]
   tags = { Name = "${var.env}-frontend-service" }
 }
 
-
-# --- Task Definition - Backend (No change to definition itself) ---
-resource "aws_ecs_task_definition" "backend_task" {
-  family                   = "${var.env}-backend-task"
-  network_mode             = "awsvpc"
-  requires_compatibilities = ["FARGATE"]
-  cpu                      = "256"
-  memory                   = "512"
-  execution_role_arn       = aws_iam_role.ecs_task_execution_role.arn
-  container_definitions = jsonencode([{
-    name      = "backend-container",
-    image     = "${aws_ecr_repository.backend_repo.repository_url}:latest",
-    essential = true,
-    portMappings = [{ containerPort = 5000, hostPort = 5000, protocol = "tcp" }],
-    environment  = [{ name = "MONGO_URI", value = "mongodb://3.86.167.109:27017/contacts" }] # Ensure this is correct and secure
-    // Ensure your backend app (index.js) listens on port 5000 and has GET / for health check
-  }])
-  tags = { Name = "${var.env}-backend-task" }
-}
-
-# --- ECS Service - Backend (MODIFIED) ---
 resource "aws_ecs_service" "backend_service" {
   name            = "${var.env}-backend-service"
   cluster         = aws_ecs_cluster.main.id
   task_definition = aws_ecs_task_definition.backend_task.arn
-  desired_count   = 2 # CHANGED to 2 containers
+  desired_count   = 2
   launch_type     = "FARGATE"
 
   network_configuration {
-    subnets          = [aws_subnet.private_a.id, aws_subnet.private_b.id] # Spread across AZs
+    subnets          = [aws_subnet.private_a.id, aws_subnet.private_b.id]
     assign_public_ip = false
-    security_groups  = [aws_security_group.backend_tasks_sg.id] # CHANGED to specific SG
+    security_groups  = [aws_security_group.backend_tasks_sg.id]
   }
 
   load_balancer {
@@ -573,18 +717,20 @@ resource "aws_ecs_service" "backend_service" {
 
   depends_on = [
     aws_ecs_cluster.main,
-    aws_lb_listener.backend_listener
+    aws_lb_listener.backend_listener,
+    aws_vpc_endpoint.mongodb_interface_endpoint # Ensure endpoint is ready
   ]
   tags = { Name = "${var.env}-backend-service" }
 }
+# --- End ECS Services ---
 
 
-# --- NEW: Route 53 Records for the Frontend ALB (MODIFIED to include allow_overwrite) ---
+# --- Route 53 Records for Frontend ALB ---
 resource "aws_route53_record" "frontend_apex" {
   zone_id         = data.aws_route53_zone.primary.zone_id
   name            = var.domain_name
   type            = "A"
-  allow_overwrite = true # Added
+  allow_overwrite = true
   alias {
     name                   = aws_lb.frontend_alb.dns_name
     zone_id                = aws_lb.frontend_alb.zone_id
@@ -596,13 +742,15 @@ resource "aws_route53_record" "frontend_www" {
   zone_id         = data.aws_route53_zone.primary.zone_id
   name            = "www.${var.domain_name}"
   type            = "A"
-  allow_overwrite = true # Added
+  allow_overwrite = true
   alias {
     name                   = aws_lb.frontend_alb.dns_name
     zone_id                = aws_lb.frontend_alb.zone_id
     evaluate_target_health = true
   }
 }
+# --- End Route 53 Records ---
+
 
 # --- Outputs ---
 output "frontend_alb_dns_name" {
@@ -618,4 +766,14 @@ output "backend_alb_dns_name" {
 output "frontend_url" {
   description = "Main URL for the frontend application."
   value       = "https://${var.domain_name}"
+}
+
+output "mongodb_vpce_dns_entries" {
+  description = "DNS entries for the MongoDB VPC Interface Endpoint. Use one of these for MONGO_URI if needed for debugging."
+  value       = aws_vpc_endpoint.mongodb_interface_endpoint.dns_entry.*.dns_name
+}
+
+output "mongo_uri_secret_arn" {
+  description = "ARN of the Secrets Manager secret storing the MongoDB URI."
+  value       = aws_secretsmanager_secret.mongo_uri_secret.arn
 }
