@@ -511,7 +511,7 @@ resource "aws_ecs_service" "frontend_service" {
 
   network_configuration {
     subnets          = [aws_subnet.public_a.id, aws_subnet.public_b.id] # Spread across AZs
-    assign_public_ip = false # CHANGED: No direct public IP
+    assign_public_ip = true # CHANGED: No direct public IP (Changed again for ECR issue)
     security_groups  = [aws_security_group.frontend_tasks_sg.id] # CHANGED to specific SG
   }
 
