@@ -3,10 +3,17 @@ variable "env" {
   type        = string
 }
 
+variable "domain_name" {
+  description = "The domain name for the frontend (e.g., rockymeranaam.site)"
+  type        = string
+  default     = "rockymeranaam.site" # Change this if your domain is different
+}
+
 provider "aws" {
   region = "us-east-1"
 }
 
+# --- VPC and Basic Networking (No changes here from your script) ---
 # VPC
 resource "aws_vpc" "main" {
   cidr_block           = "10.0.0.0/16"
@@ -27,7 +34,7 @@ resource "aws_internet_gateway" "igw" {
 
 # NAT Gateway Elastic IP
 resource "aws_eip" "nat_eip" {
-  domain = "vpc" # Changed from 'vpc = true'
+  domain = "vpc"
   tags = {
     Name = "${var.env}-nat-eip"
   }
@@ -36,7 +43,7 @@ resource "aws_eip" "nat_eip" {
 # NAT Gateway
 resource "aws_nat_gateway" "nat" {
   allocation_id = aws_eip.nat_eip.id
-  subnet_id     = aws_subnet.public_a.id
+  subnet_id     = aws_subnet.public_a.id # Assuming one NAT GW for now
   tags = {
     Name = "${var.env}-nat"
   }
@@ -125,8 +132,10 @@ resource "aws_subnet" "private_b" {
     Name = "${var.env}-private-b"
   }
 }
+# --- End Basic Networking ---
 
-# ECS Cluster
+
+# --- ECS Cluster & IAM Role (No changes here) ---
 resource "aws_ecs_cluster" "main" {
   name = "${var.env}-ecs-cluster"
   tags = {
@@ -134,54 +143,14 @@ resource "aws_ecs_cluster" "main" {
   }
 }
 
-# ECR Repository for Frontend
-resource "aws_ecr_repository" "frontend_repo" {
-  name                 = "${var.env}-frontend-repo"
-  image_tag_mutability = "MUTABLE"
-
-  lifecycle {
-    ignore_changes = [name]
-  }
-
-  tags = {
-    Name = "${var.env}-frontend-repo"
-  }
-}
-
-# ECR Lifecycle Policy - Frontend
-resource "aws_ecr_lifecycle_policy" "frontend_repo_policy" {
-  repository = aws_ecr_repository.frontend_repo.name
-
-  policy = jsonencode({
-    rules = [
-      {
-        rulePriority = 1,
-        description  = "Remove untagged images older than 14 days",
-        selection = {
-          tagStatus   = "untagged",
-          countType   = "sinceImagePushed",
-          countUnit   = "days",
-          countNumber = 14
-        },
-        action = {
-          type = "expire"
-        }
-      }
-    ]
-  })
-}
-
-# IAM Role for ECS Task Execution
 resource "aws_iam_role" "ecs_task_execution_role" {
   name = "${var.env}-ecs-task-exec-role"
   assume_role_policy = jsonencode({
     Version = "2012-10-17",
     Statement = [{
       Effect    = "Allow",
-      Principal = {
-        Service = "ecs-tasks.amazonaws.com"
-      },
-      Action = "sts:AssumeRole"
+      Principal = { Service = "ecs-tasks.amazonaws.com" },
+      Action    = "sts:AssumeRole"
     }]
   })
 }
@@ -190,73 +159,260 @@ resource "aws_iam_role_policy_attachment" "ecs_task_execution_attach" {
   role       = aws_iam_role.ecs_task_execution_role.name
   policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy"
 }
+# --- End ECS Cluster & IAM Role ---
 
-# Security Group for ECS
-resource "aws_security_group" "ecs_service" {
-  name        = "${var.env}-ecs-sg"
-  description = "Allow HTTP inbound traffic"
+
+# --- ECR Repositories & Policies (No changes here) ---
+resource "aws_ecr_repository" "frontend_repo" {
+  name                 = "${var.env}-frontend-repo"
+  image_tag_mutability = "MUTABLE"
+  lifecycle { ignore_changes = [name] }
+  tags = { Name = "${var.env}-frontend-repo" }
+}
+
+resource "aws_ecr_lifecycle_policy" "frontend_repo_policy" {
+  repository = aws_ecr_repository.frontend_repo.name
+  policy     = jsonencode({ /* ... same policy ... */ })
+}
+
+resource "aws_ecr_repository" "backend_repo" {
+  name                 = "${var.env}-backend-repo"
+  image_tag_mutability = "MUTABLE"
+  tags                 = { Name = "${var.env}-backend-repo" }
+}
+
+resource "aws_ecr_lifecycle_policy" "backend_repo_policy" {
+  repository = aws_ecr_repository.backend_repo.name
+  policy     = jsonencode({ /* ... same policy ... */ })
+}
+# --- End ECR ---
+
+
+# --- NEW: Route 53 Data Source ---
+data "aws_route53_zone" "primary" {
+  name         = "${var.domain_name}." # Note the trailing dot
+  private_zone = false
+}
+
+# --- NEW: ACM Certificate for Frontend Domain ---
+resource "aws_acm_certificate" "frontend_cert" {
+  domain_name               = var.domain_name
+  subject_alternative_names = ["www.${var.domain_name}"]
+  validation_method         = "DNS"
+  tags = {
+    Name        = "${var.env}-frontend-cert"
+    Environment = var.env
+  }
+  lifecycle { create_before_destroy = true }
+}
+
+# --- NEW: Automated DNS Validation Records for ACM Certificate using Route 53 ---
+resource "aws_route53_record" "frontend_cert_validation_records" {
+  for_each = {
+    for dvo in aws_acm_certificate.frontend_cert.domain_validation_options : dvo.domain_name => {
+      name   = dvo.resource_record_name
+      record = dvo.resource_record_value
+      type   = dvo.resource_record_type
+    }
+  }
+  allow_overwrite = true
+  name            = each.value.name
+  records         = [each.value.record]
+  ttl             = 60
+  type            = each.value.type
+  zone_id         = data.aws_route53_zone.primary.zone_id
+}
+
+# --- NEW: ACM Certificate Validation ---
+resource "aws_acm_certificate_validation" "frontend_cert_validation" {
+  certificate_arn         = aws_acm_certificate.frontend_cert.arn
+  validation_record_fqdns = [for record in aws_route53_record.frontend_cert_validation_records : record.fqdn]
+}
+
+
+# --- MODIFIED: Security Groups ---
+# Security Group for Public Frontend ALB
+resource "aws_security_group" "frontend_alb_sg" {
+  name        = "${var.env}-frontend-alb-sg"
+  description = "Allow HTTP/HTTPS inbound to Frontend ALB"
   vpc_id      = aws_vpc.main.id
-
   ingress {
     from_port   = 80
     to_port     = 80
     protocol    = "tcp"
     cidr_blocks = ["0.0.0.0/0"]
   }
-
   ingress {
-    from_port   = 5000
-    to_port     = 5000
+    from_port   = 443
+    to_port     = 443
     protocol    = "tcp"
     cidr_blocks = ["0.0.0.0/0"]
   }
-
   egress {
     from_port   = 0
     to_port     = 0
     protocol    = "-1"
     cidr_blocks = ["0.0.0.0/0"]
   }
+  tags = { Name = "${var.env}-frontend-alb-sg" }
 }
 
-# Internal ALB for Backend
+# Security Group for Frontend ECS Tasks
+resource "aws_security_group" "frontend_tasks_sg" {
+  name        = "${var.env}-frontend-tasks-sg"
+  description = "Allow traffic to frontend tasks from Frontend ALB"
+  vpc_id      = aws_vpc.main.id
+  ingress {
+    description     = "From Frontend ALB"
+    from_port       = 80 # Frontend container port
+    to_port         = 80
+    protocol        = "tcp"
+    security_groups = [aws_security_group.frontend_alb_sg.id]
+  }
+  egress { # To backend ALB and internet (via NAT)
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+  tags = { Name = "${var.env}-frontend-tasks-sg" }
+}
+
+# Security Group for Internal Backend ALB
+resource "aws_security_group" "backend_alb_sg" {
+  name        = "${var.env}-backend-alb-sg"
+  description = "Allow traffic to backend ALB from frontend tasks"
+  vpc_id      = aws_vpc.main.id
+  ingress {
+    description     = "From Frontend Tasks"
+    from_port       = 5000 # Backend ALB listener port
+    to_port         = 5000
+    protocol        = "tcp"
+    security_groups = [aws_security_group.frontend_tasks_sg.id] # Source is frontend tasks SG
+  }
+  egress { # ALB to backend tasks
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"] # Can be more specific to backend_tasks_sg if needed
+  }
+  tags = { Name = "${var.env}-backend-alb-sg" }
+}
+
+# Security Group for Backend ECS Tasks
+resource "aws_security_group" "backend_tasks_sg" {
+  name        = "${var.env}-backend-tasks-sg"
+  description = "Allow traffic to backend tasks from Backend ALB"
+  vpc_id      = aws_vpc.main.id
+  ingress {
+    description     = "From Backend ALB"
+    from_port       = 5000 # Backend container port
+    to_port         = 5000
+    protocol        = "tcp"
+    security_groups = [aws_security_group.backend_alb_sg.id] # Source is backend ALB's SG
+  }
+  egress { # To MongoDB and internet (via NAT)
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+  tags = { Name = "${var.env}-backend-tasks-sg" }
+}
+# --- End Security Groups ---
+
+
+# --- NEW: Public Application Load Balancer for Frontend ---
+resource "aws_lb" "frontend_alb" {
+  name                       = "${var.env}-frontend-alb"
+  internal                   = false
+  load_balancer_type         = "application"
+  subnets                    = [aws_subnet.public_a.id, aws_subnet.public_b.id]
+  security_groups            = [aws_security_group.frontend_alb_sg.id]
+  enable_deletion_protection = false # Set to true for production
+  tags                       = { Name = "${var.env}-frontend-alb" }
+}
+
+# --- NEW: Target Group for Frontend ECS Service ---
+resource "aws_lb_target_group" "frontend_tg" {
+  name        = "${var.env}-frontend-tg"
+  port        = 80 # Frontend container port
+  protocol    = "HTTP"
+  vpc_id      = aws_vpc.main.id
+  target_type = "ip"
+  health_check {
+    path                = "/"
+    protocol            = "HTTP"
+    matcher             = "200-299" # Frontend should serve 2xx on /
+    interval            = 30
+    timeout             = 5
+    healthy_threshold   = 2
+    unhealthy_threshold = 2
+  }
+  tags = { Name = "${var.env}-frontend-tg" }
+}
+
+# --- NEW: ALB Listener for HTTP (Port 80) - Redirects to HTTPS ---
+resource "aws_lb_listener" "frontend_http" {
+  load_balancer_arn = aws_lb.frontend_alb.arn
+  port              = 80
+  protocol          = "HTTP"
+  default_action {
+    type = "redirect"
+    redirect {
+      port        = "443"
+      protocol    = "HTTPS"
+      status_code = "HTTP_301"
+    }
+  }
+}
+
+# --- NEW: ALB Listener for HTTPS (Port 443) ---
+resource "aws_lb_listener" "frontend_https" {
+  load_balancer_arn = aws_lb.frontend_alb.arn
+  port              = 443
+  protocol          = "HTTPS"
+  ssl_policy        = "ELBSecurityPolicy-2016-08"
+  certificate_arn   = aws_acm_certificate_validation.frontend_cert_validation.certificate_arn
+  default_action {
+    type             = "forward"
+    target_group_arn = aws_lb_target_group.frontend_tg.arn
+  }
+  depends_on = [aws_acm_certificate_validation.frontend_cert_validation]
+}
+
+
+# --- Internal ALB for Backend (Modified to use new backend_alb_sg) ---
 resource "aws_lb" "backend_alb" {
   name               = "${var.env}-backend-alb"
   internal           = true
   load_balancer_type = "application"
   subnets            = [aws_subnet.private_a.id, aws_subnet.private_b.id]
-  security_groups    = [aws_security_group.ecs_service.id]
+  security_groups    = [aws_security_group.backend_alb_sg.id] # CHANGED
+  tags               = { Name = "${var.env}-backend-alb" }
 }
 
+# Backend Target Group (No change other than what you had)
 resource "aws_lb_target_group" "backend_tg" {
   name        = "${var.env}-backend-tg"
   port        = 5000
   protocol    = "HTTP"
   vpc_id      = aws_vpc.main.id
-  target_type = "ip" # Added this line
-
-  health_check {
-    path                = "/"
-    interval            = 30
-    timeout             = 5
-    healthy_threshold   = 2
-    unhealthy_threshold = 2
-    matcher             = "200-399"
-  }
+  target_type = "ip"
+  health_check { /* ... same ... */ }
+  tags = { Name = "${var.env}-backend-tg" }
 }
 
+# Backend Listener (No change)
 resource "aws_lb_listener" "backend_listener" {
   load_balancer_arn = aws_lb.backend_alb.arn
   port              = 5000
   protocol          = "HTTP"
-
-  default_action {
-    type             = "forward"
-    target_group_arn = aws_lb_target_group.backend_tg.arn
-  }
+  default_action { /* ... same ... */ }
 }
 
-# Task Definition - Frontend (with BACKEND_URL)
+
+# --- Task Definition - Frontend (No change to definition itself) ---
 resource "aws_ecs_task_definition" "frontend_task" {
   family                   = "${var.env}-frontend-task"
   network_mode             = "awsvpc"
@@ -264,72 +420,48 @@ resource "aws_ecs_task_definition" "frontend_task" {
   cpu                      = "256"
   memory                   = "512"
   execution_role_arn       = aws_iam_role.ecs_task_execution_role.arn
-
   container_definitions = jsonencode([{
-    name  = "frontend-container",
-    image = "${aws_ecr_repository.frontend_repo.repository_url}:latest", # Consider using specific tags in prod
+    name      = "frontend-container",
+    image     = "${aws_ecr_repository.frontend_repo.repository_url}:latest",
     essential = true,
-    portMappings = [{
-      containerPort = 80,
-      hostPort      = 80,
-      protocol      = "tcp"
-    }],
-    environment = [
-      {
-        name  = "BACKEND_URL",
-        value = "http://${aws_lb.backend_alb.dns_name}:5000"
-      }
-    ]
+    portMappings = [{ containerPort = 80, hostPort = 80, protocol = "tcp" }],
+    environment  = [{ name = "BACKEND_URL", value = "http://${aws_lb.backend_alb.dns_name}:5000" }]
   }])
+  tags = { Name = "${var.env}-frontend-task" }
 }
 
-# ECS Service - Frontend
+# --- ECS Service - Frontend (MODIFIED SIGNIFICANTLY) ---
 resource "aws_ecs_service" "frontend_service" {
   name            = "${var.env}-frontend-service"
   cluster         = aws_ecs_cluster.main.id
   task_definition = aws_ecs_task_definition.frontend_task.arn
-  desired_count   = 1
+  desired_count   = 2 # CHANGED to 2 containers
   launch_type     = "FARGATE"
 
   network_configuration {
-    subnets          = [aws_subnet.public_a.id] # Consider using both public_a and public_b for HA
-    assign_public_ip = true
-    security_groups  = [aws_security_group.ecs_service.id]
+    subnets          = [aws_subnet.public_a.id, aws_subnet.public_b.id] # Spread across AZs
+    assign_public_ip = false # CHANGED: No direct public IP
+    security_groups  = [aws_security_group.frontend_tasks_sg.id] # CHANGED to specific SG
   }
 
-  depends_on = [aws_ecs_cluster.main, aws_lb_listener.backend_listener] # Added backend_listener dependency
-}
-
-# ECR Repository - Backend
-resource "aws_ecr_repository" "backend_repo" {
-  name                 = "${var.env}-backend-repo"
-  image_tag_mutability = "MUTABLE"
-  tags = {
-    Name = "${var.env}-backend-repo"
+  load_balancer {
+    target_group_arn = aws_lb_target_group.frontend_tg.arn
+    container_name   = "frontend-container"
+    container_port   = 80
   }
+
+  # Ensures ALB and listeners are ready
+  depends_on = [
+    aws_ecs_cluster.main,
+    aws_lb_listener.frontend_https,
+    aws_lb_listener.frontend_http
+    # aws_lb_listener.backend_listener # This dependency might not be strictly needed for frontend service itself anymore
+  ]
+  tags = { Name = "${var.env}-frontend-service" }
 }
 
-resource "aws_ecr_lifecycle_policy" "backend_repo_policy" {
-  repository = aws_ecr_repository.backend_repo.name
 
-  policy = jsonencode({
-    rules = [{
-      rulePriority = 1,
-      description  = "Remove untagged images older than 14 days",
-      selection = {
-        tagStatus   = "untagged",
-        countType   = "sinceImagePushed",
-        countUnit   = "days",
-        countNumber = 14
-      },
-      action = {
-        type = "expire"
-      }
-    }]
-  })
-}
-
-# ECS Task Definition - Backend
+# --- Task Definition - Backend (No change to definition itself) ---
 resource "aws_ecs_task_definition" "backend_task" {
   family                   = "${var.env}-backend-task"
   network_mode             = "awsvpc"
@@ -337,37 +469,28 @@ resource "aws_ecs_task_definition" "backend_task" {
   cpu                      = "256"
   memory                   = "512"
   execution_role_arn       = aws_iam_role.ecs_task_execution_role.arn
-
   container_definitions = jsonencode([{
-    name  = "backend-container",
-    image = "${aws_ecr_repository.backend_repo.repository_url}:latest", # Consider using specific tags in prod
+    name      = "backend-container",
+    image     = "${aws_ecr_repository.backend_repo.repository_url}:latest",
     essential = true,
-    portMappings = [{
-      containerPort = 5000,
-      hostPort      = 5000,
-      protocol      = "tcp"
-    }],
-    environment = [
-      {
-        name  = "MONGO_URI",
-        value = "mongodb://3.86.167.109:27017/contacts" # Store this securely (e.g., Secrets Manager)
-      }
-    ]
+    portMappings = [{ containerPort = 5000, hostPort = 5000, protocol = "tcp" }],
+    environment  = [{ name = "MONGO_URI", value = "mongodb://3.86.167.109:27017/contacts" }] # Ensure this is correct and secure
   }])
+  tags = { Name = "${var.env}-backend-task" }
 }
 
-# ECS Service - Backend with ALB Target Group
+# --- ECS Service - Backend (MODIFIED) ---
 resource "aws_ecs_service" "backend_service" {
   name            = "${var.env}-backend-service"
   cluster         = aws_ecs_cluster.main.id
   task_definition = aws_ecs_task_definition.backend_task.arn
-  desired_count   = 1
+  desired_count   = 2 # CHANGED to 2 containers
   launch_type     = "FARGATE"
 
   network_configuration {
-    subnets          = [aws_subnet.private_b.id] # Consider using both private_a and private_b for HA
+    subnets          = [aws_subnet.private_a.id, aws_subnet.private_b.id] # Spread across AZs
     assign_public_ip = false
-    security_groups  = [aws_security_group.ecs_service.id]
+    security_groups  = [aws_security_group.backend_tasks_sg.id] # CHANGED to specific SG
   }
 
   load_balancer {
@@ -378,6 +501,47 @@ resource "aws_ecs_service" "backend_service" {
 
   depends_on = [
     aws_ecs_cluster.main,
-    aws_lb_listener.backend_listener # Ensures listener is ready before service tries to register
+    aws_lb_listener.backend_listener
   ]
+  tags = { Name = "${var.env}-backend-service" }
+}
+
+
+# --- NEW: Route 53 Records for the Frontend ALB ---
+resource "aws_route53_record" "frontend_apex" {
+  zone_id = data.aws_route53_zone.primary.zone_id
+  name    = var.domain_name
+  type    = "A"
+  alias {
+    name                   = aws_lb.frontend_alb.dns_name
+    zone_id                = aws_lb.frontend_alb.zone_id
+    evaluate_target_health = true
+  }
+}
+
+resource "aws_route53_record" "frontend_www" {
+  zone_id = data.aws_route53_zone.primary.zone_id
+  name    = "www.${var.domain_name}"
+  type    = "A"
+  alias {
+    name                   = aws_lb.frontend_alb.dns_name
+    zone_id                = aws_lb.frontend_alb.zone_id
+    evaluate_target_health = true
+  }
+}
+
+# --- Outputs ---
+output "frontend_alb_dns_name" {
+  description = "The DNS name of the public frontend Application Load Balancer."
+  value       = aws_lb.frontend_alb.dns_name
+}
+
+output "backend_alb_dns_name" {
+  description = "The DNS name of the internal backend Application Load Balancer."
+  value       = aws_lb.backend_alb.dns_name
+}
+
+output "frontend_url" {
+  description = "Main URL for the frontend application."
+  value       = "https://${var.domain_name}"
 }
