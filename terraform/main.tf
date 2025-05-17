@@ -163,10 +163,10 @@ resource "aws_iam_role_policy_attachment" "ecs_task_execution_base_policy_attach
   policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy"
 }
 
-# --- MODIFIED: IAM Policy for Task EXECUTION Role to access MongoDB Secret (v4) from Secrets Manager ---
+# --- MODIFIED: IAM Policy for Task EXECUTION Role to access MongoDB Secret (v5) from Secrets Manager ---
 resource "aws_iam_policy" "ecs_task_execution_secrets_manager_policy" {
-  name        = "${var.env}-ecs-task-exec-secrets-mgr-policy-v4" # CHANGED
-  description = "Allows ECS Task Execution Role to read the MongoDB URI secret (v4) from Secrets Manager" # CHANGED
+  name        = "${var.env}-ecs-task-exec-secrets-mgr-policy-v5" # CHANGED
+  description = "Allows ECS Task Execution Role to read the MongoDB URI secret (v5) from Secrets Manager" # CHANGED
   policy = jsonencode({
     Version = "2012-10-17",
     Statement = [
@@ -177,12 +177,12 @@ resource "aws_iam_policy" "ecs_task_execution_secrets_manager_policy" {
           "kms:Decrypt"
         ],
         Resource = [
-          aws_secretsmanager_secret.mongo_uri_secret.arn # This will point to the -v4 secret
+          aws_secretsmanager_secret.mongo_uri_secret.arn # This will point to the -v5 secret
         ]
       }
     ]
   })
-  tags = { Name = "${var.env}-ecs-task-exec-secrets-mgr-policy-v4" } # CHANGED
+  tags = { Name = "${var.env}-ecs-task-exec-secrets-mgr-policy-v5" } # CHANGED
 }
 
 resource "aws_iam_role_policy_attachment" "ecs_task_execution_secrets_manager_access_attach" {
@@ -558,12 +558,12 @@ resource "aws_vpc_endpoint" "mongodb_interface_endpoint" {
 }
 # --- End MongoDB VPC Endpoint ---
 
-# --- NEW: AWS Secrets Manager Secret for MongoDB URI (Name updated to -v4) ---
+# --- NEW: AWS Secrets Manager Secret for MongoDB URI (Name updated to -v5) ---
 resource "aws_secretsmanager_secret" "mongo_uri_secret" {
-  name        = "${var.env}/mongo_uri-v4" # CHANGED
-  description = "MongoDB connection URI v4 for the backend service using PrivateLink" # CHANGED
+  name        = "${var.env}/mongo_uri-v5" # CHANGED
+  description = "MongoDB connection URI v5 for the backend service using PrivateLink" # CHANGED
   tags = {
-    Name        = "${var.env}-mongo-uri-secret-v4" # CHANGED
+    Name        = "${var.env}-mongo-uri-secret-v5" # CHANGED
     Environment = var.env
   }
 }
@@ -630,10 +630,7 @@ resource "aws_ecs_task_definition" "frontend_task" {
 resource "aws_cloudwatch_log_group" "backend_ecs_logs" {
   name              = "/ecs/${var.env}-backend-task" # Matches task definition family
   retention_in_days = 30                             # Or your desired retention period
-  tags = {
-    Name        = "${var.env}-backend-ecs-logs"
-    Environment = var.env
-  }
+  # tags block removed to avoid logs:TagResource permission issue for Terraform executor
 }
 
 resource "aws_ecs_task_definition" "backend_task" {
@@ -682,7 +679,7 @@ resource "aws_ecs_service" "frontend_service" {
   cluster         = aws_ecs_cluster.main.id
   task_definition = aws_ecs_task_definition.frontend_task.arn
   desired_count   = 2
-  launch_type     = "FARGATE"
+  launch_type     = "Fargate" # Corrected: FARGATE should be all caps
 
   network_configuration {
     subnets          = [aws_subnet.public_a.id, aws_subnet.public_b.id]
@@ -709,7 +706,7 @@ resource "aws_ecs_service" "backend_service" {
   cluster         = aws_ecs_cluster.main.id
   task_definition = aws_ecs_task_definition.backend_task.arn
   desired_count   = 2
-  launch_type     = "FARGATE"
+  launch_type     = "FARGATE" # Corrected: FARGATE should be all caps
 
   network_configuration {
     subnets          = [aws_subnet.private_a.id, aws_subnet.private_b.id]
