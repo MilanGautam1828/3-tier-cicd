@@ -9,6 +9,14 @@ variable "domain_name" {
   default     = "rockymeranaam.site" # Change this if your domain is different
 }
 
+# RE-ADD variable for MongoDB Endpoint Service Name
+variable "mongodb_endpoint_service_name" {
+  description = "The VPC Endpoint Service Name for the MongoDB service in VPC B (e.g., com.amazonaws.vpce.us-east-1.vpce-svc-xxxxxxxxxxxxxxxxx)"
+  type        = string
+  # Example: com.amazonaws.vpce.us-east-1.vpce-svc-09f0c19c8688e5504
+  # You MUST provide this value when running terraform apply
+  # e.g., -var="mongodb_endpoint_service_name=com.amazonaws.vpce.us-east-1.vpce-svc-09f0c19c8688e5504"
+}
 
 provider "aws" {
   region = "us-east-1"
@@ -159,6 +167,42 @@ resource "aws_iam_role" "ecs_task_execution_role" {
 resource "aws_iam_role_policy_attachment" "ecs_task_execution_attach" {
   role       = aws_iam_role.ecs_task_execution_role.name
   policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy"
+}
+
+# --- NEW: IAM Policy for Task EXECUTION Role to access MongoDB Secret/Parameter ---
+# This policy will be attached to ecs_task_execution_role
+resource "aws_iam_policy" "ecs_task_execution_ssm_secrets_policy" {
+  name        = "${var.env}-ecs-task-exec-ssm-secrets-policy"
+  description = "Allows ECS Task Execution Role to read specific SSM parameters and Secrets Manager secrets"
+  policy = jsonencode({
+    Version = "2012-10-17",
+    Statement = [
+      { # For SSM Parameter Store
+        Effect   = "Allow",
+        Action   = [
+          "ssm:GetParameters",
+          "kms:Decrypt" # Required for SecureString parameters
+        ],
+        Resource = [
+          aws_ssm_parameter.mongo_uri_parameter.arn, # Reference the SSM parameter
+          # If using a custom KMS key for SecureString, add its ARN for kms:Decrypt
+          # "arn:aws:kms:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:key/*" # Broader, refine if possible
+        ]
+      },
+      # You can add a similar statement here if you decide to use Secrets Manager again for other secrets
+      # { # For Secrets Manager (if you were using it for MONGO_URI or other secrets via Task Exec Role)
+      #   Effect   = "Allow",
+      #   Action   = ["secretsmanager:GetSecretValue", "kms:Decrypt"],
+      #   Resource = [ aws_secretsmanager_secret.mongo_uri_secret.arn ] # Example if mongo_uri_secret was defined
+      # }
+    ]
+  })
+  tags = { Name = "${var.env}-ecs-task-exec-ssm-secrets-policy" }
+}
+
+resource "aws_iam_role_policy_attachment" "ecs_task_execution_ssm_secrets_access_attach" {
+  role       = aws_iam_role.ecs_task_execution_role.name
+  policy_arn = aws_iam_policy.ecs_task_execution_ssm_secrets_policy.arn
 }
 # --- End ECS Cluster & IAM Role ---
 
@@ -502,106 +546,75 @@ resource "aws_lb_listener" "backend_listener" {
 
 # --- NEW: VPC Interface Endpoint for MongoDB (MODIFIED private_dns_enabled and subnet_ids) ---
 data "aws_region" "current" {} # To get the current region
+data "aws_caller_identity" "current" {} # To get current account ID
 
 resource "aws_vpc_endpoint" "mongodb_interface_endpoint" {
   vpc_id             = aws_vpc.main.id
   service_name       = "com.amazonaws.vpce.us-east-1.vpce-svc-09f0c19c8688e5504" # HARDCODED SERVICE NAME
   vpc_endpoint_type  = "Interface"
-  subnet_ids         = [aws_subnet.private_a.id] # CHANGED: Only use subnet in the supported AZ (us-east-1a)
+  subnet_ids         = [aws_subnet.private_a.id] # Using only the supported AZ for the endpoint service
   security_group_ids = [aws_security_group.mongodb_vpce_sg.id]
-  private_dns_enabled = false # CHANGED TO FALSE
+  private_dns_enabled = false # Set to false as the service doesn't provide a private DNS name
   tags                 = { Name = "${var.env}-mongodb-interface-vpce" }
 }
 # --- End MongoDB VPC Endpoint ---
 
-# --- NEW: AWS Secrets Manager Secret for MongoDB URI (MODIFIED NAME TO -v2) ---
-resource "aws_secretsmanager_secret" "mongo_uri_secret" {
-  name        = "${var.env}/mongo_uri-v2" # CHANGED: Appended -v2
-  description = "MongoDB connection URI v2 for the backend service using PrivateLink"
+# --- NEW: AWS Systems Manager Parameter Store Parameter for MongoDB URI ---
+resource "aws_ssm_parameter" "mongo_uri_parameter" {
+  name        = "/${var.env}/mongo_uri" 
+  description = "MongoDB connection URI for the backend service using PrivateLink"
+  type        = "SecureString" 
+  value       = "mongodb://INITIAL_PLACEHOLDER_DNS.internal:27017/contacts" # Placeholder, will be updated by null_resource
   tags = {
-    Name        = "${var.env}-mongo-uri-secret-v2" # CHANGED: Appended -v2 to tag
+    Name        = "${var.env}-mongo-uri-parameter"
     Environment = var.env
+  }
+  lifecycle {
+    ignore_changes = [value] 
   }
 }
 
-# --- NEW: null_resource to update the secret after VPC endpoint is created ---
-resource "null_resource" "update_mongo_uri_secret" {
-  # Trigger this when the VPC endpoint's DNS entries change or the base secret ARN changes
+# --- NEW: null_resource to update the SSM Parameter after VPC endpoint is created ---
+resource "null_resource" "update_mongo_uri_parameter" {
   triggers = {
-    vpce_dns_trigger = join(",", sort(aws_vpc_endpoint.mongodb_interface_endpoint.dns_entry.*.dns_name))
-    secret_arn       = aws_secretsmanager_secret.mongo_uri_secret.arn # This reference is still correct
+    vpce_dns_trigger   = join(",", sort(aws_vpc_endpoint.mongodb_interface_endpoint.dns_entry.*.dns_name))
+    parameter_name     = aws_ssm_parameter.mongo_uri_parameter.name
   }
 
-  # Ensure the VPC endpoint and the base secret resource exist before trying to update
   depends_on = [
     aws_vpc_endpoint.mongodb_interface_endpoint,
-    aws_secretsmanager_secret.mongo_uri_secret
+    aws_ssm_parameter.mongo_uri_parameter 
   ]
 
   provisioner "local-exec" {
     interpreter = ["bash", "-c"]
     command     = <<EOT
-      set -e 
+      set -e
       DNS_ENTRIES_COUNT=$(echo '${length(aws_vpc_endpoint.mongodb_interface_endpoint.dns_entry.*.dns_name)}' | tr -d '[:space:]')
       echo "Number of DNS entries found for MongoDB VPCE: $DNS_ENTRIES_COUNT"
 
       if [ "$DNS_ENTRIES_COUNT" -gt 0 ]; then
-        echo "VPC Endpoint DNS entries found. Updating secret..."
+        echo "VPC Endpoint DNS entries found. Updating SSM Parameter..."
         FIRST_DNS_NAME=$(echo '${element(aws_vpc_endpoint.mongodb_interface_endpoint.dns_entry.*.dns_name, 0)}' | tr -d '[:space:]')
         echo "Using first DNS name for MONGO_URI: $FIRST_DNS_NAME"
-
-        aws secretsmanager put-secret-value \
-          --secret-id "${aws_secretsmanager_secret.mongo_uri_secret.id}" \
-          --secret-string "mongodb://$FIRST_DNS_NAME:27017/contacts" \
+        
+        aws ssm put-parameter \
+          --name "${aws_ssm_parameter.mongo_uri_parameter.name}" \
+          --value "mongodb://$FIRST_DNS_NAME:27017/contacts" \
+          --type "SecureString" \
+          --overwrite \
           --region "${data.aws_region.current.name}"
-        echo "MongoDB URI secret updated successfully in Secrets Manager."
+        echo "MongoDB URI SSM Parameter updated successfully."
       else
-        echo "WARNING: No VPC Endpoint DNS entries found for MongoDB. Secret not updated."
+        echo "WARNING: No VPC Endpoint DNS entries found for MongoDB. SSM Parameter not updated."
       fi
     EOT
   }
 }
 
-# --- NEW: IAM Role and Policy for Backend ECS Task to access Secrets Manager (MODIFIED POLICY NAME AND DESCRIPTION IF NEEDED) ---
-resource "aws_iam_role" "ecs_backend_task_role" {
-  name = "${var.env}-ecs-backend-task-role" # Name remains the same, or add -v2 if you want a new role
-  assume_role_policy = jsonencode({
-    Version = "2012-10-17",
-    Statement = [{
-      Effect    = "Allow",
-      Principal = { Service = "ecs-tasks.amazonaws.com" },
-      Action    = "sts:AssumeRole"
-    }]
-  })
-  tags = { Name = "${var.env}-ecs-backend-task-role" }
-}
-
-resource "aws_iam_policy" "ecs_backend_task_secrets_policy" {
-  name        = "${var.env}-ecs-backend-task-secrets-policy-v2" # CHANGED: Appended -v2
-  description = "Allows ECS backend tasks to read specific secrets (v2) from Secrets Manager"
-  policy = jsonencode({
-    Version = "2012-10-17",
-    Statement = [
-      {
-        Effect   = "Allow",
-        Action   = [
-          "secretsmanager:GetSecretValue",
-          "kms:Decrypt"
-        ],
-        Resource = [
-          aws_secretsmanager_secret.mongo_uri_secret.arn # This reference is still correct as it points to the new secret resource
-        ]
-      }
-    ]
-  })
-  tags = { Name = "${var.env}-ecs-backend-task-secrets-policy-v2" } # CHANGED: Appended -v2 to tag
-}
-
-resource "aws_iam_role_policy_attachment" "ecs_backend_task_secrets_attach" {
-  role       = aws_iam_role.ecs_backend_task_role.name
-  policy_arn = aws_iam_policy.ecs_backend_task_secrets_policy.arn # This reference is still correct
-}
-
+# --- MODIFIED: IAM Policy for Task EXECUTION Role to access SSM Parameter Store ---
+# The existing aws_iam_role.ecs_task_execution_role is used.
+# This policy is attached to aws_iam_role.ecs_task_execution_role.
 
 # --- ECS Task Definitions ---
 resource "aws_ecs_task_definition" "frontend_task" {
@@ -622,7 +635,22 @@ resource "aws_ecs_task_definition" "frontend_task" {
   tags = { Name = "${var.env}-frontend-task" }
 }
 
-# REMOVED: resource "aws_cloudwatch_log_group" "backend_ecs_logs"
+# Task Role for Backend Application (if app code needs other AWS permissions, otherwise can be removed)
+# For now, we keep it simple and assume the app code does not directly call other AWS services requiring a task role.
+# If it does, you would define permissions here.
+resource "aws_iam_role" "ecs_backend_task_role" {
+  name = "${var.env}-ecs-backend-app-task-role" # Distinct name
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17",
+    Statement = [{
+      Effect    = "Allow",
+      Principal = { Service = "ecs-tasks.amazonaws.com" },
+      Action    = "sts:AssumeRole"
+    }]
+  })
+  tags = { Name = "${var.env}-ecs-backend-app-task-role" }
+}
+
 
 resource "aws_ecs_task_definition" "backend_task" {
   family                   = "${var.env}-backend-task"
@@ -630,24 +658,24 @@ resource "aws_ecs_task_definition" "backend_task" {
   requires_compatibilities = ["FARGATE"]
   cpu                      = "256"
   memory                   = "512"
-  execution_role_arn       = aws_iam_role.ecs_task_execution_role.arn
-  task_role_arn            = aws_iam_role.ecs_backend_task_role.arn 
+  execution_role_arn       = aws_iam_role.ecs_task_execution_role.arn # This role needs SSM & KMS access
+  task_role_arn            = aws_iam_role.ecs_backend_task_role.arn # For app code permissions (if any)
 
   container_definitions = jsonencode([{
     name      = "backend-container",
     image     = "${aws_ecr_repository.backend_repo.repository_url}:latest",
     essential = true,
     portMappings = [{ containerPort = 5000, hostPort = 5000, protocol = "tcp" }],
-    secrets = [
+    secrets = [ # 'secrets' here is a bit of a misnomer from ECS, it can fetch from SSM too
       {
-        name      = "MONGO_URI",
-        valueFrom = aws_secretsmanager_secret.mongo_uri_secret.arn # This reference is still correct
+        name      = "MONGO_URI", # The environment variable name inside the container
+        valueFrom = aws_ssm_parameter.mongo_uri_parameter.name # Use the NAME of the SSM parameter
       }
     ],
     logConfiguration = {
       logDriver = "awslogs",
       options = {
-        "awslogs-group"         = "/ecs/${var.env}-backend-task", 
+        "awslogs-group"         = "/ecs/${var.env}-backend-task", # ECS will auto-create this if it doesn't exist
         "awslogs-region"        = data.aws_region.current.name,
         "awslogs-stream-prefix" = "ecs"
       }
@@ -656,7 +684,7 @@ resource "aws_ecs_task_definition" "backend_task" {
   }])
 
   depends_on = [
-    null_resource.update_mongo_uri_secret 
+    null_resource.update_mongo_uri_parameter, # Depend on the parameter value being set
   ]
   tags = { Name = "${var.env}-backend-task" }
 }
@@ -768,7 +796,7 @@ output "mongodb_vpce_dns_entries" {
   value       = aws_vpc_endpoint.mongodb_interface_endpoint.dns_entry.*.dns_name
 }
 
-output "mongo_uri_secret_arn" {
-  description = "ARN of the Secrets Manager secret storing the MongoDB URI."
-  value       = aws_secretsmanager_secret.mongo_uri_secret.arn # This reference is still correct
+output "mongo_uri_ssm_parameter_arn" { # CHANGED output name
+  description = "ARN of the SSM Parameter Store parameter storing the MongoDB URI."
+  value       = aws_ssm_parameter.mongo_uri_parameter.arn
 }
