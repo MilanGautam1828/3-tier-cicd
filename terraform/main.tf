@@ -163,10 +163,10 @@ resource "aws_iam_role_policy_attachment" "ecs_task_execution_base_policy_attach
   policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy"
 }
 
-# --- MODIFIED: IAM Policy for Task EXECUTION Role to access MongoDB Secret (v6) from Secrets Manager ---
+# --- MODIFIED: IAM Policy for Task EXECUTION Role to access MongoDB Secret (v7) from Secrets Manager ---
 resource "aws_iam_policy" "ecs_task_execution_secrets_manager_policy" {
-  name        = "${var.env}-ecs-task-exec-secrets-mgr-policy-v6" # CHANGED
-  description = "Allows ECS Task Execution Role to read the MongoDB URI secret (v6) from Secrets Manager" # CHANGED
+  name        = "${var.env}-ecs-task-exec-secrets-mgr-policy-v7" # CHANGED
+  description = "Allows ECS Task Execution Role to read the MongoDB URI secret (v7) from Secrets Manager" # CHANGED
   policy = jsonencode({
     Version = "2012-10-17",
     Statement = [
@@ -177,12 +177,12 @@ resource "aws_iam_policy" "ecs_task_execution_secrets_manager_policy" {
           "kms:Decrypt"
         ],
         Resource = [
-          aws_secretsmanager_secret.mongo_uri_secret.arn # This will point to the -v6 secret
+          aws_secretsmanager_secret.mongo_uri_secret.arn # This will point to the -v7 secret
         ]
       }
     ]
   })
-  tags = { Name = "${var.env}-ecs-task-exec-secrets-mgr-policy-v6" } # CHANGED
+  tags = { Name = "${var.env}-ecs-task-exec-secrets-mgr-policy-v7" } # CHANGED
 }
 
 resource "aws_iam_role_policy_attachment" "ecs_task_execution_secrets_manager_access_attach" {
@@ -558,12 +558,12 @@ resource "aws_vpc_endpoint" "mongodb_interface_endpoint" {
 }
 # --- End MongoDB VPC Endpoint ---
 
-# --- NEW: AWS Secrets Manager Secret for MongoDB URI (Name updated to -v6) ---
+# --- NEW: AWS Secrets Manager Secret for MongoDB URI (Name updated to -v7) ---
 resource "aws_secretsmanager_secret" "mongo_uri_secret" {
-  name        = "${var.env}/mongo_uri-v6" # CHANGED
-  description = "MongoDB connection URI v6 for the backend service using PrivateLink" # CHANGED
+  name        = "${var.env}/mongo_uri-v7" # CHANGED
+  description = "MongoDB connection URI v7 for the backend service using PrivateLink" # CHANGED
   tags = {
-    Name        = "${var.env}-mongo-uri-secret-v6" # CHANGED
+    Name        = "${var.env}-mongo-uri-secret-v7" # CHANGED
     Environment = var.env
   }
 }
@@ -679,7 +679,7 @@ resource "aws_ecs_service" "frontend_service" {
   cluster         = aws_ecs_cluster.main.id
   task_definition = aws_ecs_task_definition.frontend_task.arn
   desired_count   = 2
-  launch_type     = "FARGATE" 
+  launch_type     = "FARGATE"
 
   network_configuration {
     subnets          = [aws_subnet.public_a.id, aws_subnet.public_b.id]
@@ -706,7 +706,7 @@ resource "aws_ecs_service" "backend_service" {
   cluster         = aws_ecs_cluster.main.id
   task_definition = aws_ecs_task_definition.backend_task.arn
   desired_count   = 2
-  launch_type     = "FARGATE" 
+  launch_type     = "FARGATE"
 
   network_configuration {
     subnets          = [aws_subnet.private_a.id, aws_subnet.private_b.id]
