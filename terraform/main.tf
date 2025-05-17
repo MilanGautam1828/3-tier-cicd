@@ -163,10 +163,10 @@ resource "aws_iam_role_policy_attachment" "ecs_task_execution_base_policy_attach
   policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy"
 }
 
-# --- MODIFIED: IAM Policy for Task EXECUTION Role to access MongoDB Secret (v3) from Secrets Manager ---
+# --- MODIFIED: IAM Policy for Task EXECUTION Role to access MongoDB Secret (v4) from Secrets Manager ---
 resource "aws_iam_policy" "ecs_task_execution_secrets_manager_policy" {
-  name        = "${var.env}-ecs-task-exec-secrets-mgr-policy-v3" # CHANGED
-  description = "Allows ECS Task Execution Role to read the MongoDB URI secret (v3) from Secrets Manager" # CHANGED
+  name        = "${var.env}-ecs-task-exec-secrets-mgr-policy-v4" # CHANGED
+  description = "Allows ECS Task Execution Role to read the MongoDB URI secret (v4) from Secrets Manager" # CHANGED
   policy = jsonencode({
     Version = "2012-10-17",
     Statement = [
@@ -174,15 +174,15 @@ resource "aws_iam_policy" "ecs_task_execution_secrets_manager_policy" {
         Effect   = "Allow",
         Action   = [
           "secretsmanager:GetSecretValue",
-          "kms:Decrypt" 
+          "kms:Decrypt"
         ],
         Resource = [
-          aws_secretsmanager_secret.mongo_uri_secret.arn # This will point to the -v3 secret
+          aws_secretsmanager_secret.mongo_uri_secret.arn # This will point to the -v4 secret
         ]
       }
     ]
   })
-  tags = { Name = "${var.env}-ecs-task-exec-secrets-mgr-policy-v3" } # CHANGED
+  tags = { Name = "${var.env}-ecs-task-exec-secrets-mgr-policy-v4" } # CHANGED
 }
 
 resource "aws_iam_role_policy_attachment" "ecs_task_execution_secrets_manager_access_attach" {
@@ -558,12 +558,12 @@ resource "aws_vpc_endpoint" "mongodb_interface_endpoint" {
 }
 # --- End MongoDB VPC Endpoint ---
 
-# --- NEW: AWS Secrets Manager Secret for MongoDB URI (Name updated to -v3) ---
+# --- NEW: AWS Secrets Manager Secret for MongoDB URI (Name updated to -v4) ---
 resource "aws_secretsmanager_secret" "mongo_uri_secret" {
-  name        = "${var.env}/mongo_uri-v3" # CHANGED
-  description = "MongoDB connection URI v3 for the backend service using PrivateLink" # CHANGED
+  name        = "${var.env}/mongo_uri-v4" # CHANGED
+  description = "MongoDB connection URI v4 for the backend service using PrivateLink" # CHANGED
   tags = {
-    Name        = "${var.env}-mongo-uri-secret-v3" # CHANGED
+    Name        = "${var.env}-mongo-uri-secret-v4" # CHANGED
     Environment = var.env
   }
 }
@@ -626,8 +626,15 @@ resource "aws_ecs_task_definition" "frontend_task" {
   tags = { Name = "${var.env}-frontend-task" }
 }
 
-# CloudWatch Log Group for Backend ECS Tasks (Let ECS auto-create)
-# REMOVED: resource "aws_cloudwatch_log_group" "backend_ecs_logs"
+# --- RE-ADD: CloudWatch Log Group for Backend ECS Tasks ---
+resource "aws_cloudwatch_log_group" "backend_ecs_logs" {
+  name              = "/ecs/${var.env}-backend-task" # Matches task definition family
+  retention_in_days = 30                             # Or your desired retention period
+  tags = {
+    Name        = "${var.env}-backend-ecs-logs"
+    Environment = var.env
+  }
+}
 
 resource "aws_ecs_task_definition" "backend_task" {
   family                   = "${var.env}-backend-task"
@@ -635,8 +642,8 @@ resource "aws_ecs_task_definition" "backend_task" {
   requires_compatibilities = ["FARGATE"]
   cpu                      = "256"
   memory                   = "512"
-  execution_role_arn       = aws_iam_role.ecs_task_execution_role.arn 
-  task_role_arn            = aws_iam_role.ecs_backend_app_task_role.arn 
+  execution_role_arn       = aws_iam_role.ecs_task_execution_role.arn
+  task_role_arn            = aws_iam_role.ecs_backend_app_task_role.arn
 
   container_definitions = jsonencode([{
     name      = "backend-container",
@@ -652,7 +659,7 @@ resource "aws_ecs_task_definition" "backend_task" {
     logConfiguration = {
       logDriver = "awslogs",
       options = {
-        "awslogs-group"         = "/ecs/${var.env}-backend-task", 
+        "awslogs-group"         = aws_cloudwatch_log_group.backend_ecs_logs.name, # Reference the created log group
         "awslogs-region"        = data.aws_region.current.name,
         "awslogs-stream-prefix" = "ecs"
       }
@@ -661,7 +668,8 @@ resource "aws_ecs_task_definition" "backend_task" {
   }])
 
   depends_on = [
-    null_resource.update_mongo_uri_secret
+    null_resource.update_mongo_uri_secret,
+    aws_cloudwatch_log_group.backend_ecs_logs # Add dependency on the log group
   ]
   tags = { Name = "${var.env}-backend-task" }
 }
