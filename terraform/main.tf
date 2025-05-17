@@ -679,7 +679,7 @@ resource "aws_ecs_service" "frontend_service" {
   cluster         = aws_ecs_cluster.main.id
   task_definition = aws_ecs_task_definition.frontend_task.arn
   desired_count   = 2
-  launch_type     = "Fargate" # Corrected: FARGATE should be all caps
+  launch_type     = "FARGATE" # Corrected: FARGATE should be all caps
 
   network_configuration {
     subnets          = [aws_subnet.public_a.id, aws_subnet.public_b.id]
