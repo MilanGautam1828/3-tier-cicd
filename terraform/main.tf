@@ -542,16 +542,29 @@ resource "null_resource" "update_mongo_uri_secret" {
   ]
 
   provisioner "local-exec" {
-    # Only run this if there are DNS entries available
-    # The command will only proceed if the first DNS entry is not empty
-    when    = length(aws_vpc_endpoint.mongodb_interface_endpoint.dns_entry.*.dns_name) > 0
-    command = <<EOT
-      aws secretsmanager put-secret-value \
-        --secret-id "${aws_secretsmanager_secret.mongo_uri_secret.id}" \
-        --secret-string "mongodb://${element(aws_vpc_endpoint.mongodb_interface_endpoint.dns_entry.*.dns_name, 0)}:27017/contacts" \
-        --region "${data.aws_region.current.name}"
+    interpreter = ["bash", "-c"] # Explicitly use bash
+    command     = <<EOT
+      set -e # Exit immediately if a command exits with a non-zero status.
+      DNS_ENTRIES_COUNT=$(echo '${length(aws_vpc_endpoint.mongodb_interface_endpoint.dns_entry.*.dns_name)}' | tr -d '[:space:]')
+      echo "Number of DNS entries found for MongoDB VPCE: $DNS_ENTRIES_COUNT"
+
+      if [ "$DNS_ENTRIES_COUNT" -gt 0 ]; then
+        echo "VPC Endpoint DNS entries found. Updating secret..."
+        # Using element() to get the first DNS name from the list
+        FIRST_DNS_NAME=$(echo '${element(aws_vpc_endpoint.mongodb_interface_endpoint.dns_entry.*.dns_name, 0)}' | tr -d '[:space:]')
+        echo "Using first DNS name for MONGO_URI: $FIRST_DNS_NAME"
+
+        aws secretsmanager put-secret-value \
+          --secret-id "${aws_secretsmanager_secret.mongo_uri_secret.id}" \
+          --secret-string "mongodb://$FIRST_DNS_NAME:27017/contacts" \
+          --region "${data.aws_region.current.name}"
+        echo "MongoDB URI secret updated successfully in Secrets Manager."
+      else
+        echo "WARNING: No VPC Endpoint DNS entries found for MongoDB. Secret not updated. This might be an issue if this is not the first apply."
+        # Depending on your strategy, you might want to fail the apply if no DNS entries are found after creation.
+        # For now, it will just print a warning and the task definition might use an old/no secret value initially.
+      fi
     EOT
-    # interpreter = ["bash", "-c"] # Optional: specify interpreter if needed, default is usually fine
   }
 }
 
@@ -583,7 +596,7 @@ resource "aws_iam_policy" "ecs_backend_task_secrets_policy" {
                         # or if AWS-managed KMS key requires explicit decrypt by the role.
         ],
         Resource = [
-          aws_secretsmanager_secret.mongo_uri_secret.arn,
+          aws_secretsmanager_secret.mongo_uri_secret.arn
           # If using a custom KMS key for the secret, add its ARN here for kms:Decrypt
           # e.g., "arn:aws:kms:us-east-1:YOUR_ACCOUNT_ID:key/YOUR_KMS_KEY_ID"
         ]
