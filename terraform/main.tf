@@ -500,7 +500,7 @@ resource "aws_lb_listener" "backend_listener" {
 }
 # --- End Backend ALB ---
 
-# --- NEW: VPC Interface Endpoint for MongoDB (MODIFIED subnet_ids) ---
+# --- NEW: VPC Interface Endpoint for MongoDB (MODIFIED private_dns_enabled and subnet_ids) ---
 data "aws_region" "current" {} # To get the current region
 
 resource "aws_vpc_endpoint" "mongodb_interface_endpoint" {
@@ -509,7 +509,7 @@ resource "aws_vpc_endpoint" "mongodb_interface_endpoint" {
   vpc_endpoint_type  = "Interface"
   subnet_ids         = [aws_subnet.private_a.id] # CHANGED: Only use subnet in the supported AZ (us-east-1a)
   security_group_ids = [aws_security_group.mongodb_vpce_sg.id]
-  private_dns_enabled = true
+  private_dns_enabled = false # CHANGED TO FALSE
   tags                 = { Name = "${var.env}-mongodb-interface-vpce" }
 }
 # --- End MongoDB VPC Endpoint ---
@@ -535,11 +535,11 @@ resource "null_resource" "update_mongo_uri_secret" {
   # Ensure the VPC endpoint and the base secret resource exist before trying to update
   depends_on = [
     aws_vpc_endpoint.mongodb_interface_endpoint,
-    aws_secretsmanager_secret.mongo_uri_secret 
+    aws_secretsmanager_secret.mongo_uri_secret
   ]
 
   provisioner "local-exec" {
-    interpreter = ["bash", "-c"] 
+    interpreter = ["bash", "-c"]
     command     = <<EOT
       set -e 
       DNS_ENTRIES_COUNT=$(echo '${length(aws_vpc_endpoint.mongodb_interface_endpoint.dns_entry.*.dns_name)}' | tr -d '[:space:]')
@@ -586,7 +586,7 @@ resource "aws_iam_policy" "ecs_backend_task_secrets_policy" {
         Effect   = "Allow",
         Action   = [
           "secretsmanager:GetSecretValue",
-          "kms:Decrypt" 
+          "kms:Decrypt"
         ],
         Resource = [
           aws_secretsmanager_secret.mongo_uri_secret.arn
@@ -638,9 +638,9 @@ resource "aws_ecs_task_definition" "backend_task" {
     image     = "${aws_ecr_repository.backend_repo.repository_url}:latest",
     essential = true,
     portMappings = [{ containerPort = 5000, hostPort = 5000, protocol = "tcp" }],
-    secrets = [ 
+    secrets = [
       {
-        name      = "MONGO_URI", 
+        name      = "MONGO_URI",
         valueFrom = aws_secretsmanager_secret.mongo_uri_secret.arn
       }
     ],
@@ -674,7 +674,7 @@ resource "aws_ecs_service" "frontend_service" {
 
   network_configuration {
     subnets          = [aws_subnet.public_a.id, aws_subnet.public_b.id]
-    assign_public_ip = true 
+    assign_public_ip = true
     security_groups  = [aws_security_group.frontend_tasks_sg.id]
   }
 
@@ -714,7 +714,7 @@ resource "aws_ecs_service" "backend_service" {
   depends_on = [
     aws_ecs_cluster.main,
     aws_lb_listener.backend_listener,
-    aws_vpc_endpoint.mongodb_interface_endpoint 
+    aws_vpc_endpoint.mongodb_interface_endpoint
   ]
   tags = { Name = "${var.env}-backend-service" }
 }
