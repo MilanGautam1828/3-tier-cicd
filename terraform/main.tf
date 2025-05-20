@@ -163,10 +163,10 @@ resource "aws_iam_role_policy_attachment" "ecs_task_execution_base_policy_attach
   policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy"
 }
 
-# --- MODIFIED: IAM Policy for Task EXECUTION Role to access MongoDB Secret (v7) from Secrets Manager ---
+# --- MODIFIED: IAM Policy for Task EXECUTION Role to access MongoDB Secret (v8) from Secrets Manager ---
 resource "aws_iam_policy" "ecs_task_execution_secrets_manager_policy" {
-  name        = "${var.env}-ecs-task-exec-secrets-mgr-policy-v7" # CHANGED
-  description = "Allows ECS Task Execution Role to read the MongoDB URI secret (v7) from Secrets Manager" # CHANGED
+  name        = "${var.env}-ecs-task-exec-secrets-mgr-policy-v8" # CHANGED
+  description = "Allows ECS Task Execution Role to read the MongoDB URI secret (v8) from Secrets Manager" # CHANGED
   policy = jsonencode({
     Version = "2012-10-17",
     Statement = [
@@ -177,12 +177,12 @@ resource "aws_iam_policy" "ecs_task_execution_secrets_manager_policy" {
           "kms:Decrypt"
         ],
         Resource = [
-          aws_secretsmanager_secret.mongo_uri_secret.arn # This will point to the -v7 secret
+          aws_secretsmanager_secret.mongo_uri_secret.arn # This will point to the -v8 secret
         ]
       }
     ]
   })
-  tags = { Name = "${var.env}-ecs-task-exec-secrets-mgr-policy-v7" } # CHANGED
+  tags = { Name = "${var.env}-ecs-task-exec-secrets-mgr-policy-v8" } # CHANGED
 }
 
 resource "aws_iam_role_policy_attachment" "ecs_task_execution_secrets_manager_access_attach" {
@@ -558,12 +558,12 @@ resource "aws_vpc_endpoint" "mongodb_interface_endpoint" {
 }
 # --- End MongoDB VPC Endpoint ---
 
-# --- NEW: AWS Secrets Manager Secret for MongoDB URI (Name updated to -v7) ---
+# --- NEW: AWS Secrets Manager Secret for MongoDB URI (Name updated to -v8) ---
 resource "aws_secretsmanager_secret" "mongo_uri_secret" {
-  name        = "${var.env}/mongo_uri-v7" # CHANGED
-  description = "MongoDB connection URI v7 for the backend service using PrivateLink" # CHANGED
+  name        = "${var.env}/mongo_uri-v8" # CHANGED
+  description = "MongoDB connection URI v8 for the backend service using PrivateLink" # CHANGED
   tags = {
-    Name        = "${var.env}-mongo-uri-secret-v7" # CHANGED
+    Name        = "${var.env}-mongo-uri-secret-v8" # CHANGED
     Environment = var.env
   }
 }
@@ -585,7 +585,7 @@ resource "null_resource" "update_mongo_uri_secret" {
   provisioner "local-exec" {
     interpreter = ["bash", "-c"]
     command     = <<EOT
-      set -e 
+      set -e
       DNS_ENTRIES_COUNT=$(echo '${length(aws_vpc_endpoint.mongodb_interface_endpoint.dns_entry.*.dns_name)}' | tr -d '[:space:]')
       echo "Number of DNS entries found for MongoDB VPCE: $DNS_ENTRIES_COUNT"
 
@@ -650,7 +650,7 @@ resource "aws_ecs_task_definition" "backend_task" {
     secrets = [
       {
         name      = "MONGO_URI",
-        valueFrom = aws_secretsmanager_secret.mongo_uri_secret.arn
+        valueFrom = aws_secretsmanager_secret.mongo_uri_secret.arn # This ARN now refers to the secret named with -v8
       }
     ],
     logConfiguration = {
@@ -780,5 +780,5 @@ output "mongodb_vpce_dns_entries" {
 
 output "mongo_uri_secret_arn" {
   description = "ARN of the Secrets Manager secret storing the MongoDB URI."
-  value       = aws_secretsmanager_secret.mongo_uri_secret.arn
+  value       = aws_secretsmanager_secret.mongo_uri_secret.arn # This correctly refers to the updated secret
 }
